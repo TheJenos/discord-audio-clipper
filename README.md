@@ -1,0 +1,70 @@
+# Discord Audio Clipper
+
+A Discord bot that joins a voice channel, keeps a rolling in-memory recording
+of everyone talking, and lets anyone grab an mp3 clip of the last few minutes
+on command.
+
+## How it works
+
+- `/join` connects the bot to your current voice channel. From that point on,
+  it keeps a fixed-size **rolling buffer per speaker** (default: 5 minutes) of
+  raw PCM audio — nothing is written to disk while recording, so the "tape"
+  is always just the most recent window and never grows unbounded.
+- `/clip [seconds]` mixes every speaker's buffer for the requested window
+  (default and max come from your config), encodes it to mp3 via ffmpeg, and
+  uploads it. The mp3 is written to the OS temp directory only for the few
+  seconds it takes to encode and upload, then deleted.
+- `/leave` disconnects and drops the buffers. The bot also leaves
+  automatically once everyone else has left the channel.
+
+## Setup
+
+1. Create an application and bot at the
+   [Discord Developer Portal](https://discord.com/developers/applications).
+   Under **Bot**, copy the token. Under **OAuth2 → General**, copy the
+   Application (Client) ID.
+2. Invite the bot to your server with the `bot` and `applications.commands`
+   scopes, and the **Connect** + **Speak** + **View Channel** permissions
+   (Speak isn't strictly needed since the bot never talks, but some clients
+   require it to fully join).
+3. Install dependencies:
+   ```bash
+   npm install
+   ```
+4. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `CLIENT_ID`
+   (and optionally `GUILD_ID` for instant command updates during development).
+5. Register the slash commands:
+   ```bash
+   npm run deploy-commands
+   ```
+6. Start the bot:
+   ```bash
+   npm start
+   ```
+
+## Configuration
+
+All settings live in `.env` (see `.env.example`):
+
+| Variable                | Description                                              | Default |
+|--------------------------|----------------------------------------------------------|---------|
+| `DISCORD_TOKEN`          | Bot token                                                 | —       |
+| `CLIENT_ID`              | Application/client ID                                     | —       |
+| `GUILD_ID`               | Guild to register commands to instantly (optional)        | global  |
+| `RECORD_WINDOW_SECONDS`  | How much audio to keep in the rolling buffer              | `300`   |
+| `DEFAULT_CLIP_SECONDS`   | Default clip length when `/clip` is used with no argument | `300`   |
+
+`/clip` accepts an optional `seconds` argument, capped at
+`RECORD_WINDOW_SECONDS`.
+
+## Notes
+
+- Voice decoding uses the pure-JS `opusscript` codec and `libsodium-wrappers`
+  for encryption so the bot runs without any native build step. If you need
+  better performance under heavy load, you can swap in `@discordjs/opus` and
+  `sodium-native` instead — both are drop-in replacements that prism-media
+  and `@discordjs/voice` will pick up automatically once installed.
+- Memory usage scales with `RECORD_WINDOW_SECONDS` and the number of distinct
+  speakers seen since joining (each gets their own fixed-size buffer, roughly
+  `RECORD_WINDOW_SECONDS × 192 KB/s`).
+- ffmpeg is bundled via `ffmpeg-static`, so no system install is required.
