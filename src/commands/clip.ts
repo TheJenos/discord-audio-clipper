@@ -35,28 +35,29 @@ const command: Command = {
 
     await interaction.deferReply();
 
-    let filePath: string | null;
+    let clip: mixer.Clip | null;
     try {
-      filePath = await mixer.createClip(recording, seconds);
+      clip = await mixer.createClip(recording, seconds);
     } catch (err) {
       console.error('Failed to create clip:', err);
       await interaction.editReply('Something went wrong while creating the clip.');
       return;
     }
 
-    if (!filePath) {
+    if (!clip) {
       await interaction.editReply("There's no audio recorded yet.");
       return;
     }
 
     try {
-      const attachment = new AttachmentBuilder(filePath, { name: 'clip.mp3' });
-      await interaction.editReply({
-        content: `Here's the last ${seconds} seconds.`,
-        files: [attachment],
-      });
+      const attachment = new AttachmentBuilder(clip.filePath, { name: 'clip.mp3' });
+      const content =
+        clip.seconds < seconds
+          ? `Here's the last ${clip.seconds} seconds (I've only been recording that long).`
+          : `Here's the last ${seconds} seconds.`;
+      await interaction.editReply({ content, files: [attachment] });
     } finally {
-      mixer.cleanupClip(filePath);
+      mixer.cleanupClip(clip.filePath);
     }
   },
 };

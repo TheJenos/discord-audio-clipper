@@ -8,6 +8,7 @@ const recordings = new Map<string, GuildRecording>();
 export class GuildRecording {
   readonly connection: VoiceConnection;
   readonly windowMs: number;
+  readonly startedAtMs: number;
   readonly userBuffers = new Map<string, PCMRingBuffer>();
 
   private readonly receiver: VoiceReceiver;
@@ -17,6 +18,7 @@ export class GuildRecording {
   constructor(connection: VoiceConnection) {
     this.connection = connection;
     this.windowMs = config.recordWindowSeconds * 1000;
+    this.startedAtMs = Date.now();
     this.receiver = connection.receiver;
     this.onSpeakingStart = (userId: string) => this.subscribeToUser(userId);
     this.receiver.speaking.on('start', this.onSpeakingStart);

@@ -16,7 +16,7 @@ for (const command of [joinCommand, leaveCommand, clipCommand]) {
   client.commands.set(command.data.name, command);
 }
 
-client.once('ready', (readyClient) => {
+client.once('clientReady', (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 });
 
@@ -26,15 +26,29 @@ client.on('interactionCreate', async (interaction) => {
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
 
+  // The app can be installed in a server with only the `applications.commands`
+  // scope, in which case the commands show up but the bot user is not a member
+  // and `interaction.guild` is null. Answer explicitly rather than falling
+  // through to a silent 3-second interaction timeout.
+  if (!interaction.guild) {
+    await interaction.reply({
+      content:
+        "I'm not a member of this server, so I can't use its voice channels. " +
+        'Ask an admin to re-invite me with the `bot` scope.',
+      ephemeral: true,
+    });
+    return;
+  }
+
   try {
     await command.execute(interaction);
   } catch (err) {
     console.error(`Error executing /${interaction.commandName}:`, err);
-    const payload = { content: 'There was an error running this command.', ephemeral: true };
+    const content = 'There was an error running this command.';
     if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(payload);
+      await interaction.editReply({ content });
     } else {
-      await interaction.reply(payload);
+      await interaction.reply({ content, ephemeral: true });
     }
   }
 });

@@ -70,15 +70,24 @@ export class PCMRingBuffer {
   write(pcmChunk: Buffer, timestampMs: number = Date.now()): void {
     if (this.capacity === 0 || pcmChunk.length === 0) return;
 
-    if (this.lastWriteEndMs !== null && timestampMs > this.lastWriteEndMs) {
+    if (this.lastWriteEndMs === null) {
+      this.lastWriteEndMs = timestampMs;
+    } else if (timestampMs > this.lastWriteEndMs) {
+      // A real silence gap (or a brand new speaking session) - fill it and
+      // resync the cursor to wall-clock time.
       const gapMs = Math.min(timestampMs - this.lastWriteEndMs, this.durationMs);
       const gapBytes = alignDown(Math.round(gapMs * BYTES_PER_MS));
       zeroWrap(this.buffer, this.capacity, this.posFor(this.lastWriteEndMs), gapBytes);
+      this.lastWriteEndMs = timestampMs;
     }
+    // Otherwise this packet arrived earlier than the running cursor (event
+    // loop jitter bunching up decoded frames) - keep writing at the cursor
+    // instead of the arrival time so consecutive frames stay contiguous
+    // instead of overlapping and corrupting each other.
 
-    const idx = this.posFor(timestampMs);
+    const idx = this.posFor(this.lastWriteEndMs);
     writeWrap(this.buffer, this.capacity, idx, pcmChunk);
-    this.lastWriteEndMs = timestampMs + pcmChunk.length / BYTES_PER_MS;
+    this.lastWriteEndMs += pcmChunk.length / BYTES_PER_MS;
     this.lastActivityMs = timestampMs;
   }
 

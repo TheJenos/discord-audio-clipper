@@ -24,14 +24,26 @@ function mixPCM(buffers: Buffer[], byteLength: number): Buffer {
     }
   }
 
+  // Scale the whole mix down by its peak instead of hard-clipping each
+  // sample - clipping is what caused audible distortion whenever multiple
+  // people talked at once.
+  let peak = 0;
+  for (let i = 0; i < sampleCount; i++) {
+    const abs = Math.abs(mixed[i]);
+    if (abs > peak) peak = abs;
+  }
+  const scale = peak > 32767 ? 32767 / peak : 1;
+
   const out = Buffer.alloc(byteLength);
   for (let i = 0; i < sampleCount; i++) {
-    let v = mixed[i];
-    if (v > 32767) v = 32767;
-    else if (v < -32768) v = -32768;
-    out.writeInt16LE(v, i * 2);
+    out.writeInt16LE(Math.round(mixed[i] * scale), i * 2);
   }
   return out;
+}
+
+export interface Clip {
+  filePath: string;
+  seconds: number;
 }
 
 /**
@@ -39,9 +51,13 @@ function mixPCM(buffers: Buffer[], byteLength: number): Buffer {
  * the result to an mp3 file in the OS temp directory. Resolves with the
  * file path; the caller is responsible for deleting it once sent.
  */
-export async function createClip(guildRecording: GuildRecording, seconds: number): Promise<string | null> {
-  const durationMs = Math.min(seconds * 1000, guildRecording.windowMs);
+export async function createClip(guildRecording: GuildRecording, seconds: number): Promise<Clip | null> {
   const endMs = Date.now();
+  // Never return audio from before the bot joined this session — the ring
+  // buffer is zero-filled there, which would otherwise pad the clip with
+  // silence instead of trimming it to what was actually recorded.
+  const recordedMs = endMs - guildRecording.startedAtMs;
+  const durationMs = Math.min(seconds * 1000, guildRecording.windowMs, recordedMs);
   const startMs = endMs - durationMs;
 
   const byteLength =
@@ -73,7 +89,7 @@ export async function createClip(guildRecording: GuildRecording, seconds: number
       .save(outputPath);
   });
 
-  return outputPath;
+  return { filePath: outputPath, seconds: Math.floor(byteLength / (SAMPLE_RATE * FRAME_BYTES)) };
 }
 
 export function cleanupClip(filePath: string | null | undefined): void {
