@@ -33,14 +33,22 @@ on command.
    ```
 4. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `CLIENT_ID`
    (and optionally `GUILD_ID` for instant command updates during development).
-5. Register the slash commands:
+5. Build the TypeScript sources:
+   ```bash
+   npm run build
+   ```
+6. Register the slash commands:
    ```bash
    npm run deploy-commands
    ```
-6. Start the bot:
+7. Start the bot:
    ```bash
    npm start
    ```
+
+During development you can skip the build step and run the TypeScript
+sources directly with `npm run dev` (and `npm run deploy-commands:dev` for
+command registration), both powered by `ts-node`.
 
 ## Configuration
 
@@ -59,6 +67,10 @@ All settings live in `.env` (see `.env.example`):
 
 ## Notes
 
+- Written in TypeScript (source in `src/`, compiled output in `dist/`).
+  `npm run build` type-checks and compiles; `npm start` runs the compiled
+  output; `npm run dev` runs the sources directly via `ts-node` for quicker
+  iteration.
 - Voice decoding uses the pure-JS `opusscript` codec and `libsodium-wrappers`
   for encryption so the bot runs without any native build step. If you need
   better performance under heavy load, you can swap in `@discordjs/opus` and

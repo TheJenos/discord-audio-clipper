@@ -1,20 +1,23 @@
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
-const { getVoiceConnection } = require('@discordjs/voice');
-const config = require('./config');
-const recorder = require('./voice/recorder');
+import { Client, GatewayIntentBits, Collection } from 'discord.js';
+import { getVoiceConnection } from '@discordjs/voice';
+import { config } from './config';
+import * as recorder from './voice/recorder';
+import type { Command } from './types';
+import joinCommand from './commands/join';
+import leaveCommand from './commands/leave';
+import clipCommand from './commands/clip';
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
-client.commands = new Collection();
-for (const name of ['join', 'leave', 'clip']) {
-  const command = require(`./commands/${name}`);
+client.commands = new Collection<string, Command>();
+for (const command of [joinCommand, leaveCommand, clipCommand]) {
   client.commands.set(command.data.name, command);
 }
 
-client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
+client.once('ready', (readyClient) => {
+  console.log(`Logged in as ${readyClient.user.tag}`);
 });
 
 client.on('interactionCreate', async (interaction) => {

@@ -1,13 +1,16 @@
-const { SlashCommandBuilder } = require('discord.js');
-const { getVoiceConnection } = require('@discordjs/voice');
-const recorder = require('../voice/recorder');
+import { SlashCommandBuilder } from 'discord.js';
+import { getVoiceConnection } from '@discordjs/voice';
+import * as recorder from '../voice/recorder';
+import type { Command } from '../types';
 
-module.exports = {
+const command: Command = {
   data: new SlashCommandBuilder()
     .setName('leave')
     .setDescription('Leave the voice channel and stop recording.'),
 
   async execute(interaction) {
+    if (!interaction.guild) return;
+
     const connection = getVoiceConnection(interaction.guild.id);
 
     if (!connection) {
@@ -21,3 +24,5 @@ module.exports = {
     await interaction.reply('Left the voice channel and cleared the recording buffer.');
   },
 };
+
+export default command;

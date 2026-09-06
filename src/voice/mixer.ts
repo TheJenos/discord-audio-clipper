@@ -1,15 +1,19 @@
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const { PassThrough } = require('stream');
-const ffmpegPath = require('ffmpeg-static');
-const ffmpeg = require('fluent-ffmpeg');
-const { SAMPLE_RATE, CHANNELS, FRAME_BYTES } = require('./ringBuffer');
+import os from 'os';
+import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+import { PassThrough } from 'stream';
+import ffmpegPath from 'ffmpeg-static';
+import ffmpeg from 'fluent-ffmpeg';
+import { SAMPLE_RATE, CHANNELS, FRAME_BYTES } from './ringBuffer';
+import type { GuildRecording } from './recorder';
 
+if (!ffmpegPath) {
+  throw new Error('ffmpeg-static did not resolve an ffmpeg binary for this platform.');
+}
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-function mixPCM(buffers, byteLength) {
+function mixPCM(buffers: Buffer[], byteLength: number): Buffer {
   const sampleCount = byteLength / 2; // 16-bit samples
   const mixed = new Int32Array(sampleCount);
 
@@ -35,7 +39,7 @@ function mixPCM(buffers, byteLength) {
  * the result to an mp3 file in the OS temp directory. Resolves with the
  * file path; the caller is responsible for deleting it once sent.
  */
-async function createClip(guildRecording, seconds) {
+export async function createClip(guildRecording: GuildRecording, seconds: number): Promise<string | null> {
   const durationMs = Math.min(seconds * 1000, guildRecording.windowMs);
   const endMs = Date.now();
   const startMs = endMs - durationMs;
@@ -43,7 +47,7 @@ async function createClip(guildRecording, seconds) {
   const byteLength =
     Math.floor((durationMs * SAMPLE_RATE * FRAME_BYTES) / 1000 / FRAME_BYTES) * FRAME_BYTES;
 
-  const perUserBuffers = [];
+  const perUserBuffers: Buffer[] = [];
   for (const ring of guildRecording.userBuffers.values()) {
     perUserBuffers.push(ring.read(startMs, endMs));
   }
@@ -55,7 +59,7 @@ async function createClip(guildRecording, seconds) {
   const mixed = mixPCM(perUserBuffers, byteLength);
   const outputPath = path.join(os.tmpdir(), `clip-${crypto.randomUUID()}.mp3`);
 
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const input = new PassThrough();
     input.end(mixed);
 
@@ -65,16 +69,14 @@ async function createClip(guildRecording, seconds) {
       .audioBitrate(128)
       .format('mp3')
       .on('error', reject)
-      .on('end', resolve)
+      .on('end', () => resolve())
       .save(outputPath);
   });
 
   return outputPath;
 }
 
-function cleanupClip(filePath) {
+export function cleanupClip(filePath: string | null | undefined): void {
   if (!filePath) return;
   fs.unlink(filePath, () => {});
 }
-
-module.exports = { createClip, cleanupClip };

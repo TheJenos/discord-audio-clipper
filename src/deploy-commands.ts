@@ -1,7 +1,10 @@
-const { REST, Routes } = require('discord.js');
-const config = require('./config');
+import { REST, Routes } from 'discord.js';
+import { config } from './config';
+import joinCommand from './commands/join';
+import leaveCommand from './commands/leave';
+import clipCommand from './commands/clip';
 
-const commands = ['join', 'leave', 'clip'].map((name) => require(`./commands/${name}`).data.toJSON());
+const commands = [joinCommand, leaveCommand, clipCommand].map((command) => command.data.toJSON());
 
 const rest = new REST().setToken(config.token);
 

@@ -1,21 +1,26 @@
-const { SlashCommandBuilder, AttachmentBuilder } = require('discord.js');
-const recorder = require('../voice/recorder');
-const mixer = require('../voice/mixer');
-const config = require('../config');
+import { SlashCommandBuilder, AttachmentBuilder } from 'discord.js';
+import * as recorder from '../voice/recorder';
+import * as mixer from '../voice/mixer';
+import { config } from '../config';
+import type { Command } from '../types';
 
-module.exports = {
+const command: Command = {
   data: new SlashCommandBuilder()
     .setName('clip')
     .setDescription('Create an audio clip from the recorded conversation.')
     .addIntegerOption((option) =>
       option
         .setName('seconds')
-        .setDescription(`How many seconds back to clip (default ${config.defaultClipSeconds}, max ${config.recordWindowSeconds}).`)
+        .setDescription(
+          `How many seconds back to clip (default ${config.defaultClipSeconds}, max ${config.recordWindowSeconds}).`
+        )
         .setMinValue(1)
         .setMaxValue(config.recordWindowSeconds)
     ),
 
   async execute(interaction) {
+    if (!interaction.guild) return;
+
     const recording = recorder.getRecording(interaction.guild.id);
 
     if (!recording) {
@@ -30,7 +35,7 @@ module.exports = {
 
     await interaction.deferReply();
 
-    let filePath;
+    let filePath: string | null;
     try {
       filePath = await mixer.createClip(recording, seconds);
     } catch (err) {
@@ -55,3 +60,5 @@ module.exports = {
     }
   },
 };
+
+export default command;
