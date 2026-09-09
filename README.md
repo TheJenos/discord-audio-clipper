@@ -4,6 +4,10 @@ A Discord bot that joins a voice channel, keeps a rolling in-memory recording
 of everyone talking, and lets anyone grab an mp3 clip of the last few minutes
 on command.
 
+This README is a quickstart. For architecture, the full audio pipeline,
+every command and config option, production deployment notes, and
+troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
+
 ## How it works
 
 - `/join` connects the bot to your current voice channel. From that point on,

@@ -38,7 +38,7 @@ function persist(): void {
 }
 
 export function getGuildSettings(guildId: string): GuildSettings {
-  return cache[guildId] ?? DEFAULT_SETTINGS;
+  return { ...DEFAULT_SETTINGS, ...cache[guildId] };
 }
 
 function updateGuildSettings(guildId: string, update: Partial<GuildSettings>): GuildSettings {
