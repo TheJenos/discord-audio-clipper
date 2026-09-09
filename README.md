@@ -4,6 +4,10 @@ A Discord bot that joins a voice channel, keeps a rolling in-memory recording
 of everyone talking, and lets anyone grab an mp3 clip of the last few minutes
 on command.
 
+This README is a quickstart. For architecture, the full audio pipeline,
+every command and config option, production deployment notes, and
+troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
+
 ## How it works
 
 - `/join` connects the bot to your current voice channel. From that point on,
@@ -15,10 +19,15 @@ on command.
   uploads it. The mp3 is written to the OS temp directory only for the few
   seconds it takes to encode and upload, then deleted.
 - `/leave` disconnects and drops the buffers. The bot also leaves
-  automatically once everyone else has left the channel.
-- `/autojoin <enabled>` toggles automatic joining per server. While on, the
-  bot connects and starts recording on its own as soon as more than 3 people
-  (configurable) are together in a voice channel — no need to run `/join`.
+  automatically once everyone else has left the channel — after a short grace
+  period (default 10s), in case everyone just briefly dropped out.
+- `/autojoin enable` / `/autojoin disable` toggles automatic joining per
+  server. While on, the bot connects and starts recording on its own as soon
+  as more than 3 people (configurable) are together in a voice channel — no
+  need to run `/join`. `/autojoin status` shows the current settings, and
+  `/autojoin exclude add|remove <channel>` keeps specific channels (like an
+  AFK lobby) from ever triggering it. All of this is saved to disk, so it
+  survives a bot restart.
 
 ## Setup
 
@@ -65,13 +74,17 @@ All settings live in `.env` (see `.env.example`):
 | `RECORD_WINDOW_SECONDS`  | How much audio to keep in the rolling buffer              | `300`   |
 | `DEFAULT_CLIP_SECONDS`   | Default clip length when `/clip` is used with no argument | `300`   |
 | `AUTO_JOIN_MIN_MEMBERS`  | Humans required in a channel to trigger auto-join         | `4`     |
+| `LEAVE_GRACE_SECONDS`    | Delay before auto-leaving an emptied channel               | `10`    |
+| `DATA_DIR`               | Where per-guild settings are persisted (JSON file)         | `./data`|
 
 `/clip` accepts an optional `seconds` argument, capped at
 `RECORD_WINDOW_SECONDS`.
 
-Auto-join is off by default in every server; use `/autojoin enabled:true` to
-turn it on and `/autojoin enabled:false` to turn it back off. It only kicks
-in while the bot isn't already connected in that server.
+Auto-join is off by default in every server; use `/autojoin enable` to turn
+it on and `/autojoin disable` to turn it back off. It only kicks in while the
+bot isn't already connected in that server, and skips any channel added with
+`/autojoin exclude add`. These settings live in `<DATA_DIR>/settings.json`
+(gitignored) and are read back on startup.
 
 ## Notes
 

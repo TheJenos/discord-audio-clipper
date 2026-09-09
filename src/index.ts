@@ -1,9 +1,10 @@
-import { Client, GatewayIntentBits, Collection } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, Guild } from 'discord.js';
 import { getVoiceConnection } from '@discordjs/voice';
 import { config } from './config';
 import * as recorder from './voice/recorder';
 import { connectAndRecord } from './voice/connect';
-import * as autoJoinState from './voice/autoJoinState';
+import * as leaveGrace from './voice/leaveGrace';
+import * as settingsStore from './store/settingsStore';
 import type { Command } from './types';
 import joinCommand from './commands/join';
 import leaveCommand from './commands/leave';
@@ -56,28 +57,45 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// Leaves and stops recording after a grace period once a channel empties,
+// aborting if someone rejoins before the timer fires.
+function scheduleAutoLeave(guild: Guild): void {
+  leaveGrace.scheduleLeave(guild.id, config.leaveGraceSeconds * 1000, () => {
+    const connection = getVoiceConnection(guild.id);
+    if (!connection) return;
+
+    const channel = guild.members.me?.voice.channel;
+    const humansRemaining = channel?.members.filter((m) => !m.user.bot).size ?? 0;
+    if (humansRemaining > 0) return;
+
+    recorder.stopRecording(guild.id);
+    connection.destroy();
+  });
+}
+
 client.on('voiceStateUpdate', async (oldState, newState) => {
   const guild = newState.guild;
   const connection = getVoiceConnection(guild.id);
 
-  // Leave and stop recording automatically once everyone else has left the channel.
   if (connection) {
     const channel = guild.members.me?.voice.channel;
-    if (channel) {
-      const humansRemaining = channel.members.filter((m) => !m.user.bot).size;
-      if (humansRemaining === 0) {
-        recorder.stopRecording(guild.id);
-        connection.destroy();
-      }
+    const humansRemaining = channel?.members.filter((m) => !m.user.bot).size ?? 0;
+
+    if (humansRemaining === 0) {
+      scheduleAutoLeave(guild);
+    } else {
+      leaveGrace.cancelScheduledLeave(guild.id);
     }
     return;
   }
 
-  // Auto-join a channel once enough members have gathered in it, if enabled for this guild.
-  if (!autoJoinState.isEnabled(guild.id)) return;
+  // Auto-join a channel once enough members have gathered in it, if enabled
+  // for this guild and the channel isn't excluded.
+  if (!settingsStore.isAutoJoinEnabled(guild.id)) return;
 
   const channel = newState.channel;
   if (!channel) return;
+  if (settingsStore.isChannelExcluded(guild.id, channel.id)) return;
 
   const humanCount = channel.members.filter((m) => !m.user.bot).size;
   if (humanCount < config.autoJoinMinMembers) return;
