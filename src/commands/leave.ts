@@ -1,6 +1,7 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { getVoiceConnection } from '@discordjs/voice';
 import * as recorder from '../voice/recorder';
+import * as leaveGrace from '../voice/leaveGrace';
 import type { Command } from '../types';
 
 const command: Command = {
@@ -18,6 +19,7 @@ const command: Command = {
       return;
     }
 
+    leaveGrace.cancelScheduledLeave(interaction.guild.id);
     recorder.stopRecording(interaction.guild.id);
     connection.destroy();
 
