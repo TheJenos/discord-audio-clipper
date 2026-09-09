@@ -16,6 +16,9 @@ on command.
   seconds it takes to encode and upload, then deleted.
 - `/leave` disconnects and drops the buffers. The bot also leaves
   automatically once everyone else has left the channel.
+- `/autojoin <enabled>` toggles automatic joining per server. While on, the
+  bot connects and starts recording on its own as soon as more than 3 people
+  (configurable) are together in a voice channel — no need to run `/join`.
 
 ## Setup
 
@@ -61,9 +64,14 @@ All settings live in `.env` (see `.env.example`):
 | `GUILD_ID`               | Guild to register commands to instantly (optional)        | global  |
 | `RECORD_WINDOW_SECONDS`  | How much audio to keep in the rolling buffer              | `300`   |
 | `DEFAULT_CLIP_SECONDS`   | Default clip length when `/clip` is used with no argument | `300`   |
+| `AUTO_JOIN_MIN_MEMBERS`  | Humans required in a channel to trigger auto-join         | `4`     |
 
 `/clip` accepts an optional `seconds` argument, capped at
 `RECORD_WINDOW_SECONDS`.
+
+Auto-join is off by default in every server; use `/autojoin enabled:true` to
+turn it on and `/autojoin enabled:false` to turn it back off. It only kicks
+in while the bot isn't already connected in that server.
 
 ## Notes
 
