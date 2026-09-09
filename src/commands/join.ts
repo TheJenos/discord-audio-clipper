@@ -1,6 +1,5 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { joinVoiceChannel, VoiceConnectionStatus, entersState } from '@discordjs/voice';
-import * as recorder from '../voice/recorder';
+import { connectAndRecord } from '../voice/connect';
 import type { Command } from '../types';
 
 const command: Command = {
@@ -24,22 +23,12 @@ const command: Command = {
 
     await interaction.deferReply();
 
-    const connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: channel.guild.id,
-      adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: false,
-    });
-
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+      await connectAndRecord(channel);
     } catch {
-      connection.destroy();
       await interaction.editReply('Could not connect to the voice channel in time.');
       return;
     }
-
-    recorder.startRecording(channel.guild.id, connection);
 
     await interaction.editReply(
       `Joined **${channel.name}** and started recording. Use \`/clip\` any time to grab the last few minutes.`

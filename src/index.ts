@@ -2,17 +2,20 @@ import { Client, GatewayIntentBits, Collection } from 'discord.js';
 import { getVoiceConnection } from '@discordjs/voice';
 import { config } from './config';
 import * as recorder from './voice/recorder';
+import { connectAndRecord } from './voice/connect';
+import * as autoJoinState from './voice/autoJoinState';
 import type { Command } from './types';
 import joinCommand from './commands/join';
 import leaveCommand from './commands/leave';
 import clipCommand from './commands/clip';
+import autojoinCommand from './commands/autojoin';
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
 client.commands = new Collection<string, Command>();
-for (const command of [joinCommand, leaveCommand, clipCommand]) {
+for (const command of [joinCommand, leaveCommand, clipCommand, autojoinCommand]) {
   client.commands.set(command.data.name, command);
 }
 
@@ -53,19 +56,36 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// Leave and stop recording automatically once everyone else has left the channel.
-client.on('voiceStateUpdate', (oldState) => {
-  const guild = oldState.guild;
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  const guild = newState.guild;
   const connection = getVoiceConnection(guild.id);
-  if (!connection) return;
 
-  const channel = guild.members.me?.voice.channel;
+  // Leave and stop recording automatically once everyone else has left the channel.
+  if (connection) {
+    const channel = guild.members.me?.voice.channel;
+    if (channel) {
+      const humansRemaining = channel.members.filter((m) => !m.user.bot).size;
+      if (humansRemaining === 0) {
+        recorder.stopRecording(guild.id);
+        connection.destroy();
+      }
+    }
+    return;
+  }
+
+  // Auto-join a channel once enough members have gathered in it, if enabled for this guild.
+  if (!autoJoinState.isEnabled(guild.id)) return;
+
+  const channel = newState.channel;
   if (!channel) return;
 
-  const humansRemaining = channel.members.filter((m) => !m.user.bot).size;
-  if (humansRemaining === 0) {
-    recorder.stopRecording(guild.id);
-    connection.destroy();
+  const humanCount = channel.members.filter((m) => !m.user.bot).size;
+  if (humanCount < config.autoJoinMinMembers) return;
+
+  try {
+    await connectAndRecord(channel);
+  } catch (err) {
+    console.error(`Auto-join failed in guild ${guild.id}:`, err);
   }
 });
 
