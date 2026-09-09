@@ -1,6 +1,7 @@
 import { joinVoiceChannel, VoiceConnectionStatus, entersState, VoiceConnection } from '@discordjs/voice';
 import type { VoiceBasedChannel } from 'discord.js';
 import * as recorder from './recorder';
+import { attachWakeWordHandler } from './wakeClip';
 
 // Joins a voice channel and starts recording. Shared by /join and auto-join so
 // both paths connect the same way.
@@ -19,6 +20,7 @@ export async function connectAndRecord(channel: VoiceBasedChannel): Promise<Voic
     throw err;
   }
 
-  recorder.startRecording(channel.guild.id, connection);
+  const recording = recorder.startRecording(channel.guild.id, connection);
+  attachWakeWordHandler(channel, recording);
   return connection;
 }

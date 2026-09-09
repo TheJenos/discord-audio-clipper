@@ -1,10 +1,12 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "discord-audio-clipper",
       "dependencies": {
         "@discordjs/voice": "^0.19.2",
+        "@picovoice/porcupine-node": "^4.0.2",
         "discord.js": "^14.15.3",
         "dotenv": "^16.4.5",
         "ffmpeg-static": "^5.2.0",
@@ -53,6 +55,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.9", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.0.3", "@jridgewell/sourcemap-codec": "^1.4.10" } }, "sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ=="],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.2.3", "", { "dependencies": { "@tybys/wasm-util": "^0.10.3" }, "peerDependencies": { "@emnapi/core": "^1.7.1 || ^2.0.0-alpha.4", "@emnapi/runtime": "^1.7.1 || ^2.0.0-alpha.4" } }, "sha512-UMduMbqO5s5zF2NkNacMT/yK5Y5QiKvWr2+50bzIIxFDwVJ2h49b+oyjaCGPhJxd2/gC2x39EHv/gHVuu36x2Q=="],
+
+    "@picovoice/porcupine-node": ["@picovoice/porcupine-node@4.0.2", "", { "cpu": [ "!ppc", "!ia32", "!mips", "!ppc64", ] }, "sha512-iGvjjmwERw1WpGrgFNZ46PlAzASXab+KqOu02p/RVs0+v6dL9JDQDhcYmGSXEqj+6dzJ08UsveYFySj+CFCYlQ=="],
 
     "@sapphire/async-queue": ["@sapphire/async-queue@1.5.5", "", {}, "sha512-cvGzxbba6sav2zZkH8GPf2oGk9yYoD5qrNWdu9fRehifgnFZJMV+nuy2nON2roRO4yQQ+v7MK/Pktl/HgfsUXg=="],
 

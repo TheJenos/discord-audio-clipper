@@ -23,4 +23,11 @@ export const config = {
   leaveGraceSeconds: Number(process.env.LEAVE_GRACE_SECONDS) || 10,
   // Where per-guild settings (auto-join on/off, excluded channels) are persisted.
   dataDir: process.env.DATA_DIR || path.join(process.cwd(), 'data'),
+  // How many seconds "clip that" grabs, once /voiceclip is enabled for a server.
+  wakeWordClipSeconds: Number(process.env.WAKE_WORD_CLIP_SECONDS) || 30,
+  // Picovoice Porcupine wake-word engine, used to detect "clip that" being
+  // spoken. Both must be set for /voiceclip to be usable - see docs/GUIDE.md.
+  porcupineAccessKey: process.env.PORCUPINE_ACCESS_KEY || null,
+  porcupineKeywordPath: process.env.PORCUPINE_KEYWORD_PATH || null,
+  porcupineSensitivity: Number(process.env.PORCUPINE_SENSITIVITY) || 0.5,
 };
