@@ -17,7 +17,7 @@ export const config = {
   defaultClipSeconds: Number(process.env.DEFAULT_CLIP_SECONDS) || 300,
   // Auto-join triggers once a channel has at least this many humans in it
   // (default 4, i.e. "more than 3").
-  autoJoinMinMembers: Number(process.env.AUTO_JOIN_MIN_MEMBERS) || 4,
+  autoJoinMinMembers: Number(process.env.AUTO_JOIN_MIN_MEMBERS) || 3,
   // How long to wait after a voice channel empties before actually leaving,
   // in case everyone just briefly dropped out.
   leaveGraceSeconds: Number(process.env.LEAVE_GRACE_SECONDS) || 10,
