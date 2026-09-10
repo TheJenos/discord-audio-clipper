@@ -1,48 +1,80 @@
-import { Porcupine } from '@picovoice/porcupine-node';
+import { KeywordSpotter, OnlineStream } from 'sherpa-onnx-node';
 import { config } from '../config';
 import { FRAME_BYTES, SAMPLE_RATE } from './ringBuffer';
 
+const TARGET_SAMPLE_RATE = 16000;
+const DECIMATION_RATIO = SAMPLE_RATE / TARGET_SAMPLE_RATE;
+
 export function isConfigured(): boolean {
-  return Boolean(config.porcupineAccessKey && config.porcupineKeywordPath);
+  return Boolean(
+    config.kwsEncoderPath &&
+      config.kwsDecoderPath &&
+      config.kwsJoinerPath &&
+      config.kwsTokensPath &&
+      config.kwsKeywordsPath
+  );
+}
+
+// The ONNX model itself is heavy to load, so it's created once and shared
+// across every speaker; only the lightweight per-speaker OnlineStream below
+// is created and torn down per speaking session.
+let sharedSpotter: KeywordSpotter | null = null;
+
+function getSpotter(): KeywordSpotter {
+  if (sharedSpotter) return sharedSpotter;
+
+  if (
+    !config.kwsEncoderPath ||
+    !config.kwsDecoderPath ||
+    !config.kwsJoinerPath ||
+    !config.kwsTokensPath ||
+    !config.kwsKeywordsPath
+  ) {
+    throw new Error(
+      'Keyword spotting is not configured (KWS_ENCODER_PATH / KWS_DECODER_PATH / KWS_JOINER_PATH / KWS_TOKENS_PATH / KWS_KEYWORDS_PATH).'
+    );
+  }
+
+  sharedSpotter = new KeywordSpotter({
+    featConfig: { sampleRate: TARGET_SAMPLE_RATE, featureDim: 80 },
+    modelConfig: {
+      transducer: {
+        encoder: config.kwsEncoderPath,
+        decoder: config.kwsDecoderPath,
+        joiner: config.kwsJoinerPath,
+      },
+      tokens: config.kwsTokensPath,
+      numThreads: 1,
+      provider: 'cpu',
+    },
+    keywordsFile: config.kwsKeywordsPath,
+    keywordsScore: config.kwsScore,
+    keywordsThreshold: config.kwsThreshold,
+  });
+  return sharedSpotter;
 }
 
 /**
- * Feeds a single speaker's 48kHz stereo PCM stream into a dedicated Porcupine
- * instance to detect the "clip that" wake word, downsampling to whatever mono
- * rate Porcupine expects along the way.
+ * Feeds a single speaker's 48kHz stereo PCM stream into its own
+ * sherpa-onnx keyword-spotting stream to detect the "clip that" wake word,
+ * downsampling to the mono rate the model expects along the way.
  */
 export class WakeWordDetector {
-  private readonly porcupine: Porcupine;
-  private readonly decimationRatio: number;
-  private readonly frame: Int16Array;
-  private frameLen = 0;
+  private readonly stream: OnlineStream;
   private phase = 0;
   private accumulator = 0;
 
   constructor(private readonly onDetected: () => void) {
-    if (!config.porcupineAccessKey || !config.porcupineKeywordPath) {
-      throw new Error('Porcupine is not configured (PORCUPINE_ACCESS_KEY / PORCUPINE_KEYWORD_PATH).');
-    }
-
-    this.porcupine = new Porcupine(
-      config.porcupineAccessKey,
-      [config.porcupineKeywordPath],
-      [config.porcupineSensitivity]
-    );
-
-    if (SAMPLE_RATE % this.porcupine.sampleRate !== 0) {
-      this.porcupine.release();
-      throw new Error(
-        `Porcupine sample rate (${this.porcupine.sampleRate}Hz) does not evenly divide the recorder's ${SAMPLE_RATE}Hz.`
-      );
-    }
-    this.decimationRatio = SAMPLE_RATE / this.porcupine.sampleRate;
-    this.frame = new Int16Array(this.porcupine.frameLength);
+    this.stream = getSpotter().createStream();
   }
 
   /** Feed a chunk of 48kHz stereo, 16-bit PCM as decoded by the recorder. */
   push(chunk: Buffer): void {
     const frameCount = Math.floor(chunk.length / FRAME_BYTES);
+    if (frameCount === 0) return;
+
+    const samples = new Float32Array(Math.ceil(frameCount / DECIMATION_RATIO));
+    let sampleCount = 0;
 
     for (let i = 0; i < frameCount; i++) {
       const offset = i * FRAME_BYTES;
@@ -51,21 +83,28 @@ export class WakeWordDetector {
       this.accumulator += (left + right) / 2;
       this.phase++;
 
-      if (this.phase < this.decimationRatio) continue;
+      if (this.phase < DECIMATION_RATIO) continue;
       this.phase = 0;
-      this.frame[this.frameLen++] = Math.round(this.accumulator / this.decimationRatio);
+      samples[sampleCount++] = this.accumulator / DECIMATION_RATIO / 32768;
       this.accumulator = 0;
+    }
 
-      if (this.frameLen === this.frame.length) {
-        this.frameLen = 0;
-        if (this.porcupine.process(this.frame) >= 0) {
-          this.onDetected();
-        }
-      }
+    if (sampleCount === 0) return;
+
+    const spotter = getSpotter();
+    this.stream.acceptWaveform({ samples: samples.subarray(0, sampleCount), sampleRate: TARGET_SAMPLE_RATE });
+
+    while (spotter.isReady(this.stream)) {
+      spotter.decode(this.stream);
+    }
+
+    if (spotter.getResult(this.stream).keyword) {
+      spotter.reset(this.stream);
+      this.onDetected();
     }
   }
 
-  destroy(): void {
-    this.porcupine.release();
-  }
+  // No explicit native handle to release - the underlying stream is
+  // reclaimed by the addon's own finalizer once this is garbage collected.
+  destroy(): void {}
 }

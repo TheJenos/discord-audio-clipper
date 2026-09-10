@@ -31,8 +31,10 @@ troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
 - `/voiceclip enable` / `/voiceclip disable` turns on saying **"clip that"**
   out loud to grab a clip hands-free — it posts the last 30 seconds
   (configurable) to `/voiceclip channel set <channel>` if you've set one, or
-  the voice channel's own text chat otherwise. This needs a one-time setup
-  step by whoever runs the bot (a free Picovoice wake-word model) — see
+  the voice channel's own text chat otherwise. Detection runs on a free,
+  fully offline [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+  keyword-spotting model — no account, API key, or per-use cost, but it
+  needs a one-time setup step by whoever runs the bot — see
   [docs/GUIDE.md](docs/GUIDE.md#6-voiceclip-clip-that-setup).
 
 ## Setup
@@ -82,9 +84,9 @@ All settings live in `.env` (see `.env.example`):
 | `AUTO_JOIN_MIN_MEMBERS`  | Humans required in a channel to trigger auto-join         | `4`     |
 | `LEAVE_GRACE_SECONDS`    | Delay before auto-leaving an emptied channel               | `10`    |
 | `DATA_DIR`               | Where per-guild settings are persisted (JSON file)         | `./data`|
-| `PORCUPINE_ACCESS_KEY`   | Picovoice AccessKey, required for `/voiceclip`             | —       |
-| `PORCUPINE_KEYWORD_PATH` | Path to a `.ppn` "clip that" model, required for `/voiceclip` | —    |
-| `PORCUPINE_SENSITIVITY`  | Wake-word detection sensitivity, `0`-`1`                   | `0.5`   |
+| `KWS_ENCODER_PATH`, `KWS_DECODER_PATH`, `KWS_JOINER_PATH`, `KWS_TOKENS_PATH` | Paths to the sherpa-onnx keyword-spotting model's files, required for `/voiceclip` | — |
+| `KWS_KEYWORDS_PATH`      | Path to the generated "clip that" keywords file, required for `/voiceclip` | — |
+| `KWS_SCORE`, `KWS_THRESHOLD` | Optional overrides for detection sensitivity          | *(from file)* |
 | `WAKE_WORD_CLIP_SECONDS` | How many seconds "clip that" grabs                         | `30`    |
 
 `/clip` accepts an optional `seconds` argument, capped at
@@ -97,8 +99,9 @@ bot isn't already connected in that server, and skips any channel added with
 (gitignored) and are read back on startup.
 
 `/voiceclip` behaves the same way, but `/voiceclip enable` refuses to turn on
-until `PORCUPINE_ACCESS_KEY` and `PORCUPINE_KEYWORD_PATH` are set — see
-[docs/GUIDE.md](docs/GUIDE.md#6-voiceclip-clip-that-setup) for how to get them.
+until all five `KWS_*` paths are set — see
+[docs/GUIDE.md](docs/GUIDE.md#6-voiceclip-clip-that-setup) for the (free,
+no-account) setup.
 
 ## Notes
 

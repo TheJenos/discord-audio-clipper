@@ -62,9 +62,9 @@ const command: Command = {
       if (sub === 'enable' && !wakeWord.isConfigured()) {
         await interaction.reply({
           content:
-            'This bot has not been set up for wake-word detection yet — ' +
-            'PORCUPINE_ACCESS_KEY and PORCUPINE_KEYWORD_PATH need to be configured by whoever runs it. ' +
-            'See docs/GUIDE.md for how to get those from Picovoice.',
+            'This bot has not been set up for wake-word detection yet — the KWS_* environment ' +
+            'variables need to be configured by whoever runs it. See docs/GUIDE.md for how to set ' +
+            'those up (free, no account needed).',
           ephemeral: true,
         });
         return;

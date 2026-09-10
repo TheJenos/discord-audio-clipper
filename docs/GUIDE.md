@@ -51,7 +51,7 @@ flowchart TB
         Recorder[voice/recorder.ts<br/>GuildRecording]
         Ring[voice/ringBuffer.ts<br/>PCMRingBuffer per speaker]
         Mixer[voice/mixer.ts<br/>mix + ffmpeg encode]
-        Wake[voice/wakeWord.ts<br/>Porcupine "clip that" detector]
+        Wake[voice/wakeWord.ts<br/>sherpa-onnx "clip that" detector]
         WakeClip[voice/wakeClip.ts<br/>clip + post on detection]
         LeaveGrace[voice/leaveGrace.ts<br/>debounced auto-leave]
         Store[store/settingsStore.ts<br/>JSON-backed guild settings]
@@ -100,9 +100,10 @@ flowchart TB
 - **`voice/mixer.ts`** reads the requested window from every speaker's ring
   buffer, sums them into one mix, and shells out to `ffmpeg` to encode an
   mp3. Used by both `/clip` and the wake-word handler.
-- **`voice/wakeWord.ts`** wraps a Picovoice Porcupine instance per actively
-  speaking user, downsampling their PCM and feeding it in to detect "clip
-  that" (see [§6](#6-voiceclip-clip-that-setup)).
+- **`voice/wakeWord.ts`** wraps a single shared sherpa-onnx keyword-spotting
+  model (loaded once for the whole process), creating a lightweight
+  per-speaker stream that downsamples their PCM and feeds it in to detect
+  "clip that" (see [§6](#6-voiceclip-clip-that-setup)).
 - **`voice/wakeClip.ts`** listens for a `GuildRecording`'s `'wakeword'`
   event, debounces repeated triggers, clips the last `WAKE_WORD_CLIP_SECONDS`
   via the mixer, and posts it to the configured channel (or the voice
@@ -132,7 +133,7 @@ sequenceDiagram
     Note over RB: positioned by wall-clock time,<br/>wraps after windowMs
     opt /voiceclip enabled for this guild
         D->>W: same PCM chunks
-        W->>W: downsample to 16kHz mono,<br/>batch into Porcupine frames
+        W->>W: downsample to 16kHz mono,<br/>feed into the speaker's KWS stream
         W-->>R: onDetected() if "clip that" heard
     end
 ```
@@ -155,13 +156,15 @@ sequenceDiagram
    corresponds to the same instant — instead of needing to timestamp-align
    streams after the fact.
 4. **Wake-word detection (optional).** If `/voiceclip enable` has been run
-   for the guild and the bot has a Porcupine model configured, the same PCM
-   chunks are also handed to a per-speaker `WakeWordDetector`. It downsamples
-   48kHz stereo to whatever mono rate Porcupine expects (16kHz, a clean 3:1
-   ratio) by averaging channels and decimating, batches samples into
-   Porcupine's fixed frame size, and calls `porcupine.process(frame)` on each
-   one. A non-negative return means "clip that" was heard, which fires the
-   `GuildRecording`'s `'wakeword'` event — see [§6](#6-voiceclip-clip-that-setup).
+   for the guild and the bot has a keyword-spotting model configured, the
+   same PCM chunks are also handed to a per-speaker `WakeWordDetector`. It
+   downsamples 48kHz stereo to the model's 16kHz mono (a clean 3:1 ratio) by
+   averaging channels and decimating, feeds the result into that speaker's
+   own lightweight sherpa-onnx stream (`acceptWaveform` + a `decode` loop
+   while the stream reports it's ready), and reads back the stream's result.
+   A non-empty `keyword` means "clip that" was heard: the stream is reset
+   (so it can detect again) and the `GuildRecording`'s `'wakeword'` event
+   fires — see [§6](#6-voiceclip-clip-that-setup).
 5. **Clipping.** Both `/clip [seconds]` and a wake-word detection call
    `mixer.createClip`, which:
    - computes `[startMs, endMs)` for the requested window, clamped to both
@@ -177,8 +180,10 @@ sequenceDiagram
    - the caller uploads that file as a Discord attachment, then calls
      `mixer.cleanupClip` to delete it.
 6. **Leaving.** `recorder.stopRecording(guildId)` unhooks the `speaking`
-   listener, releases any active Porcupine instances, and drops all buffers
-   — recorded audio for that guild is gone the moment the bot leaves.
+   listener and drops all buffers — recorded audio for that guild is gone
+   the moment the bot leaves. Per-speaker keyword-spotting streams are
+   dropped along with their subscriptions as speakers stop talking; the
+   shared model itself stays loaded for the life of the process.
 
 ## 4. Auto-join, auto-leave, and the leave grace period
 
@@ -246,37 +251,74 @@ in a container.
 ## 6. Voiceclip Clip-That Setup
 
 `/voiceclip` lets anyone say **"clip that"** out loud instead of typing
-`/clip`. Detecting an arbitrary spoken phrase reliably needs a real
-speech-recognition model, so this feature is built on
-[Picovoice Porcupine](https://picovoice.ai/products/porcupine/), an offline
-wake-word engine: it runs locally (no audio ever leaves the bot process for
-this purpose), needs very little CPU, and is purpose-built for spotting one
-fixed phrase rather than doing general transcription.
+`/clip`. Detection runs on [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+(specifically its Node binding,
+[`sherpa-onnx-node`](https://www.npmjs.com/package/sherpa-onnx-node)) — an
+Apache-2.0, fully offline speech toolkit with a purpose-built **keyword
+spotting (KWS)** mode: a tiny model that only recognizes a fixed list of
+phrases you give it, rather than doing general transcription. No account, no
+API key, no per-use cost, and no usage cap — you just need one free
+pretrained model file and a short one-time step to teach it the phrase
+"clip that".
 
-This needs a one-time setup by whoever **runs** the bot (not per-server —
-it's a bot-wide deployment step, same as `DISCORD_TOKEN`):
+This is a one-time setup by whoever **runs** the bot (not per-server — it's
+a bot-wide deployment step, same as `DISCORD_TOKEN`), done once on any
+machine with Python, then shipped to wherever the bot actually runs:
 
-1. **Create a free Picovoice account** at
-   [console.picovoice.ai](https://console.picovoice.ai/) and copy your
-   **AccessKey** from the console dashboard.
-2. **Create a custom wake word.** In the console, go to **Porcupine → Create
-   Wake Word**, type `clip that`, and pick the **platform** that matches
-   where the bot actually runs (e.g. Linux if it's on a typical server,
-   macOS/Windows for local dev). Download the resulting `.ppn` file.
-3. **Ship the file with your deployment** somewhere the bot process can read
-   it, and set two env vars (see [`.env.example`](../.env.example)):
+1. **Download a pretrained English KWS model** (no login required) — a tiny
+   3.3M-parameter Zipformer trained on GigaSpeech, about 5-13MB depending on
+   which of its `.onnx` files you use:
+   ```bash
+   wget https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
+   tar xjf sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
    ```
-   PORCUPINE_ACCESS_KEY=your-access-key-from-the-console
-   PORCUPINE_KEYWORD_PATH=/path/to/clip_that_<platform>.ppn
+   Other free models (including other languages) are listed at the
+   [sherpa-onnx KWS pretrained models page](https://github.com/k2-fsa/sherpa-onnx/releases/tag/kws-models).
+   The int8-quantized `*.int8.onnx` files are smaller and faster with
+   negligible accuracy loss for a task this narrow — use those unless you
+   have a reason not to.
+2. **Generate a keywords file for "clip that".** The model needs the phrase
+   spelled out in its own BPE token vocabulary, produced by a small CLI tool
+   that ships with the (separate, Python) `sherpa-onnx` package:
+   ```bash
+   pip install sherpa-onnx
+   echo 'CLIP THAT :2.0 #0.35 @clip_that' > keywords_raw.txt
+   sherpa-onnx-cli text2token \
+     --tokens sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/tokens.txt \
+     --tokens-type bpe \
+     --bpe-model sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/bpe.model \
+     keywords_raw.txt keywords.txt
+   ```
+   In `keywords_raw.txt`, `:2.0` is a boosting score and `#0.35` a triggering
+   threshold — both optional tuning knobs (see step 4) — and `@clip_that` is
+   the label reported back as `KeywordResult.keyword` on a hit (spaces
+   replaced with underscores). This step is local and instant; nothing is
+   uploaded anywhere. (This is the only step that needs Python — the bot
+   itself only needs the Node package, already in `package.json`.)
+3. **Ship both the model and `keywords.txt` with your deployment**
+   somewhere the bot process can read them, and point five env vars at the
+   exact files (see [`.env.example`](../.env.example)):
+   ```
+   KWS_ENCODER_PATH=/path/to/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx
+   KWS_DECODER_PATH=/path/to/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx
+   KWS_JOINER_PATH=/path/to/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx
+   KWS_TOKENS_PATH=/path/to/tokens.txt
+   KWS_KEYWORDS_PATH=/path/to/keywords.txt
    ```
 4. Restart the bot. `/voiceclip enable` will now work in any server it's in
-   — it refuses to turn on and explains why if these aren't set.
-5. Optionally tune `PORCUPINE_SENSITIVITY` (`0`-`1`, default `0.5`; higher
-   catches more true positives at the cost of more false triggers) and
-   `WAKE_WORD_CLIP_SECONDS` (default `30`).
+   — it refuses to turn on and explains why if these aren't set. Tune
+   detection by re-running step 2 with a different `:score`/`#threshold` in
+   `keywords_raw.txt` (higher score / lower threshold = fewer misses, more
+   false triggers), or override them at runtime without regenerating the
+   file via `KWS_SCORE`/`KWS_THRESHOLD`. `WAKE_WORD_CLIP_SECONDS` (default
+   `30`) controls how much audio a detection grabs.
 
-Check Picovoice's current pricing/usage terms for your deployment's scale —
-the console's free tier is meant for personal/low-volume use.
+`sherpa-onnx-node` ships prebuilt native bindings per platform (no
+compilation step, unlike some alternatives — see the note in
+[§10](#10-running-in-production) about matching platforms). The ONNX model
+itself is loaded once and shared for the whole process; only a lightweight
+per-speaker stream is created per speaking session, so the marginal cost of
+having `/voiceclip` on is small even with several people talking at once.
 
 Per-server, once the bot is configured:
 
@@ -317,8 +359,8 @@ Per-server, once the bot is configured:
 5. **Configure.** Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN`
    and `CLIENT_ID`. Set `GUILD_ID` too while developing — guild-scoped
    commands register instantly, global ones can take up to an hour to
-   propagate. `PORCUPINE_ACCESS_KEY`/`PORCUPINE_KEYWORD_PATH` are only
-   needed if you want `/voiceclip` — see [§6](#6-voiceclip-clip-that-setup).
+   propagate. The `KWS_*` variables are only needed if you want
+   `/voiceclip` — see [§6](#6-voiceclip-clip-that-setup).
 6. **Build:**
    ```bash
    npm run build
@@ -353,9 +395,12 @@ these.
 | `AUTO_JOIN_MIN_MEMBERS`  |          | `4`       | Auto-join fires once a channel has at least this many non-bot members — "more than 3" means `4`. Only takes effect in guilds where `/autojoin enable` has been run. |
 | `LEAVE_GRACE_SECONDS`    |          | `10`      | Delay after a channel empties before the bot actually disconnects, to absorb brief drop-and-rejoin blips. |
 | `DATA_DIR`               |          | `./data`  | Directory holding `settings.json` (per-guild auto-join and voice-clip settings). Must be writable; point it at a persistent volume in containerized deployments. |
-| `PORCUPINE_ACCESS_KEY`   |          | —         | Picovoice AccessKey. Required (along with `PORCUPINE_KEYWORD_PATH`) for `/voiceclip enable` to work — see [§6](#6-voiceclip-clip-that-setup). |
-| `PORCUPINE_KEYWORD_PATH` |          | —         | Path to a custom `.ppn` "clip that" wake-word file for the platform the bot runs on. |
-| `PORCUPINE_SENSITIVITY`  |          | `0.5`     | Wake-word detection sensitivity, `0`-`1`. Higher = fewer misses, more false triggers. |
+| `KWS_ENCODER_PATH`       |          | —         | Path to the KWS model's encoder `.onnx` file. Required (with the four below) for `/voiceclip enable` to work — see [§6](#6-voiceclip-clip-that-setup). |
+| `KWS_DECODER_PATH`       |          | —         | Path to the KWS model's decoder `.onnx` file. |
+| `KWS_JOINER_PATH`        |          | —         | Path to the KWS model's joiner `.onnx` file. |
+| `KWS_TOKENS_PATH`        |          | —         | Path to the KWS model's `tokens.txt`. |
+| `KWS_KEYWORDS_PATH`      |          | —         | Path to the generated `keywords.txt` containing "clip that". |
+| `KWS_SCORE`, `KWS_THRESHOLD` |      | *(from file)* | Optional overrides for the boosting score / triggering threshold baked into `keywords.txt`, without regenerating it. |
 | `WAKE_WORD_CLIP_SECONDS` |          | `30`      | How many seconds "clip that" grabs. |
 
 ## 9. Command reference
@@ -412,7 +457,7 @@ and [§6](#6-voiceclip-clip-that-setup)):
 
 | Subcommand | Effect |
 |---|---|
-| `/voiceclip enable` | Turns "clip that" detection on for this server. Fails with an explanatory error if the bot itself hasn't been configured with a Porcupine AccessKey and keyword file. |
+| `/voiceclip enable` | Turns "clip that" detection on for this server. Fails with an explanatory error if the bot itself hasn't been configured with a keyword-spotting model. |
 | `/voiceclip disable` | Turns detection off for this server. |
 | `/voiceclip status` | Shows on/off state, the destination channel, and whether the bot has a wake-word engine configured at all. |
 | `/voiceclip channel set <channel>` | Posts future "clip that" clips to this text channel instead of the voice chat. |
@@ -457,14 +502,15 @@ Notes:
   guilds becomes a problem, installing `@discordjs/opus` and `sodium-native`
   alongside the existing deps lets `prism-media`/`@discordjs/voice` pick them
   up automatically as faster drop-ins.
-- `@picovoice/porcupine-node` ships a prebuilt native binding per platform.
-  Make sure your build/deploy environment matches the platform the
-  `.ppn` keyword file was generated for (see [§6](#6-voiceclip-clip-that-setup))
-  — a mismatch fails at `/voiceclip enable` time with a clear error, not
-  silently.
-- Every currently-speaking user gets their own Porcupine instance while
-  `/voiceclip` is enabled; each is lightweight, but CPU use scales with how
-  many people are talking concurrently across all guilds.
+- `sherpa-onnx-node` ships prebuilt native bindings per platform (Linux,
+  macOS, Windows, several architectures) — no compilation step on install,
+  and no matching requirement with the model/keywords files (those are
+  plain ONNX/text and portable across platforms, unlike some wake-word
+  engines' compiled keyword files).
+- The KWS model itself is loaded once and shared process-wide. Every
+  currently-speaking user gets their own lightweight decoding stream while
+  `/voiceclip` is enabled; CPU use scales with how many people are talking
+  concurrently across all guilds, not with the number of guilds themselves.
 
 ## 11. Troubleshooting
 
@@ -513,19 +559,19 @@ environment. Point it at a volume that survives redeploys.
 
 **`/voiceclip enable` says the bot isn't configured for wake-word
 detection.**
-`PORCUPINE_ACCESS_KEY` and/or `PORCUPINE_KEYWORD_PATH` aren't set (or the
-process wasn't restarted after setting them). This is a bot-operator setup
-step, not something a server admin can fix from Discord — see
+One or more of the five `KWS_*` paths aren't set (or the process wasn't
+restarted after setting them). This is a bot-operator setup step, not
+something a server admin can fix from Discord — see
 [§6](#6-voiceclip-clip-that-setup).
 
 **"clip that" isn't triggering even though `/voiceclip status` shows it's
 on.**
 Check the bot is actually connected and recording in that guild — enabling
 `/voiceclip` doesn't join a channel by itself. If it's connected and still
-not triggering: verify the `.ppn` file was generated for `clip that`
-specifically and for the right platform (a mismatched platform build fails
-loudly at startup/enable time rather than silently misdetecting), and try
-raising `PORCUPINE_SENSITIVITY`.
+not triggering: confirm `KWS_KEYWORDS_PATH` actually contains a line for
+"clip that" (re-run the `text2token` step in [§6](#6-voiceclip-clip-that-setup)
+if unsure), and try raising the boosting score / lowering the threshold —
+either by regenerating `keywords_raw.txt` or via `KWS_SCORE`/`KWS_THRESHOLD`.
 
 **"clip that" clips don't get posted anywhere.**
 If a channel was set with `/voiceclip channel set`, confirm the bot still
@@ -553,7 +599,7 @@ src/
     recorder.ts             GuildRecording: per-guild subscription lifecycle
     ringBuffer.ts            PCMRingBuffer: time-indexed circular PCM buffer
     mixer.ts                 mixdown + ffmpeg encode for /clip and wake-word clips
-    wakeWord.ts              per-speaker Porcupine "clip that" detector
+    wakeWord.ts              shared sherpa-onnx model + per-speaker "clip that" detector
     wakeClip.ts              turns a wake-word detection into a posted clip
     leaveGrace.ts            debounce timers for auto-leave
   store/
@@ -572,9 +618,11 @@ and re-run `npm run deploy-commands`.
 first time they're read, since `getGuildSettings` merges over
 `DEFAULT_SETTINGS`.
 
-**Adding another voice trigger phrase:** Porcupine supports multiple
-keywords per instance (`new Porcupine(accessKey, [path1, path2, ...],
-[sensitivity1, sensitivity2, ...])`, returning the index of whichever one
-matched). `wakeWord.ts` currently wires up a single keyword; extending it to
-several would mean threading the matched index through the `'wakeword'`
-event instead of a bare detection.
+**Adding another voice trigger phrase:** a sherpa-onnx keywords file already
+supports multiple phrases with no code changes — add another line to
+`keywords_raw.txt` (e.g. `CLIP THAT :2.0 #0.35 @clip_that` plus
+`STOP RECORDING :2.0 #0.35 @stop_recording`), re-run `text2token`, and
+`WakeWordDetector`'s `onDetected` callback fires the same way regardless of
+which line matched. To act differently per phrase, thread
+`spotter.getResult(stream).keyword` (the `@`-label, e.g. `clip_that`)
+through the `'wakeword'` event instead of the current bare detection.

@@ -25,9 +25,16 @@ export const config = {
   dataDir: process.env.DATA_DIR || path.join(process.cwd(), 'data'),
   // How many seconds "clip that" grabs, once /voiceclip is enabled for a server.
   wakeWordClipSeconds: Number(process.env.WAKE_WORD_CLIP_SECONDS) || 30,
-  // Picovoice Porcupine wake-word engine, used to detect "clip that" being
-  // spoken. Both must be set for /voiceclip to be usable - see docs/GUIDE.md.
-  porcupineAccessKey: process.env.PORCUPINE_ACCESS_KEY || null,
-  porcupineKeywordPath: process.env.PORCUPINE_KEYWORD_PATH || null,
-  porcupineSensitivity: Number(process.env.PORCUPINE_SENSITIVITY) || 0.5,
+  // sherpa-onnx keyword-spotting model (free, offline, no account needed),
+  // used to detect "clip that" being spoken. All five KWS_* paths must be
+  // set for /voiceclip to be usable - see docs/GUIDE.md.
+  kwsEncoderPath: process.env.KWS_ENCODER_PATH || null,
+  kwsDecoderPath: process.env.KWS_DECODER_PATH || null,
+  kwsJoinerPath: process.env.KWS_JOINER_PATH || null,
+  kwsTokensPath: process.env.KWS_TOKENS_PATH || null,
+  kwsKeywordsPath: process.env.KWS_KEYWORDS_PATH || null,
+  // Optional overrides for the boosting score / triggering threshold baked
+  // into the keywords file - leave unset to use the file's own values.
+  kwsScore: process.env.KWS_SCORE ? Number(process.env.KWS_SCORE) : undefined,
+  kwsThreshold: process.env.KWS_THRESHOLD ? Number(process.env.KWS_THRESHOLD) : undefined,
 };
