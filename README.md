@@ -99,9 +99,11 @@ bot isn't already connected in that server, and skips any channel added with
 (gitignored) and are read back on startup.
 
 `/voiceclip` behaves the same way, but `/voiceclip enable` refuses to turn on
-until all five `KWS_*` paths are set — see
-[docs/GUIDE.md](docs/GUIDE.md#6-voiceclip-clip-that-setup) for the (free,
-no-account) setup.
+until all five `KWS_*` paths are set. Run `npm run setup-voiceclip` to fetch
+the free model, generate a "clip that" keywords file, and write those paths
+into `.env` automatically — see
+[docs/GUIDE.md](docs/GUIDE.md#6-voiceclip-clip-that-setup) for details and
+manual steps.
 
 ## Notes
 

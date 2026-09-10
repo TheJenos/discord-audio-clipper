@@ -263,7 +263,38 @@ pretrained model file and a short one-time step to teach it the phrase
 
 This is a one-time setup by whoever **runs** the bot (not per-server — it's
 a bot-wide deployment step, same as `DISCORD_TOKEN`), done once on any
-machine with Python, then shipped to wherever the bot actually runs:
+machine with Python, then shipped to wherever the bot actually runs.
+
+### Automated: `scripts/setup-voiceclip.sh`
+
+The fastest path — downloads the model, generates the keywords file, and
+writes the five `KWS_*` paths straight into `.env`:
+
+```bash
+npm run setup-voiceclip
+```
+
+Re-running it is safe: it skips the download if the model's already there,
+and only overwrites the `KWS_*` lines in `.env`, leaving everything else
+untouched. Useful flags (`scripts/setup-voiceclip.sh --help` for the full
+list):
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--phrase "clip that"` | `clip that` | Trigger phrase to teach the model |
+| `--score` / `--threshold` | `2.0` / `0.35` | Baked into the generated keywords file — see step 4 below for what these do |
+| `--out-dir` | `data/kws-model` | Where the model + generated `keywords.txt` are stored (already gitignored) |
+| `--env-file` | `.env` | Which file to write `KWS_*` into |
+| `--fp32` | *(off = int8)* | Use full-precision model files instead of the smaller/faster int8 ones |
+| `--print-only` | *(off)* | Print the `KWS_*` lines instead of writing them to `--env-file`, if you'd rather manage them yourself |
+
+It needs `python3`, `pip3`, `tar`, and `curl` or `wget` on the machine it
+runs on; it installs the `sherpa-onnx` Python package (and its `click` /
+`pypinyin` runtime dependencies, which that package doesn't always declare
+on its own) automatically if `sherpa-onnx-cli` isn't already on `PATH`.
+
+The rest of this section is what the script automates, spelled out for
+reference or if you'd rather run it by hand:
 
 1. **Download a pretrained English KWS model** (no login required) — a tiny
    3.3M-parameter Zipformer trained on GigaSpeech, about 5-13MB depending on

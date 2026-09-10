@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Downloads the free sherpa-onnx keyword-spotting model, generates a
+# keywords file for a trigger phrase (default "clip that"), and writes
+# the resulting KWS_* paths into .env - everything /voiceclip needs.
+# See docs/GUIDE.md §6 for the manual walkthrough this automates.
+#
+# Usage:
+#   scripts/setup-voiceclip.sh [options]
+#
+# Options:
+#   --phrase "clip that"   Trigger phrase to detect (default: "clip that")
+#   --score 2.0             Boosting score - higher catches more, more false positives
+#   --threshold 0.35        Triggering threshold - lower catches more, more false positives
+#   --out-dir data/kws-model  Where the model + generated keywords file are stored
+#   --env-file .env          .env file to write KWS_* into (created if missing)
+#   --fp32                   Use full-precision model files instead of int8 (larger, slower)
+#   --print-only             Print the KWS_* lines instead of writing them to --env-file
+#   -h, --help                Show this help
+set -euo pipefail
+
+MODEL_NAME="sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/${MODEL_NAME}.tar.bz2"
+
+PHRASE="clip that"
+SCORE="2.0"
+THRESHOLD="0.35"
+OUT_DIR="data/kws-model"
+ENV_FILE=".env"
+PRECISION="int8"
+PRINT_ONLY=0
+
+usage() {
+  sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d; s/^# \{0,1\}//'
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --phrase) PHRASE="$2"; shift 2 ;;
+    --score) SCORE="$2"; shift 2 ;;
+    --threshold) THRESHOLD="$2"; shift 2 ;;
+    --out-dir) OUT_DIR="$2"; shift 2 ;;
+    --env-file) ENV_FILE="$2"; shift 2 ;;
+    --fp32) PRECISION="fp32"; shift ;;
+    --print-only) PRINT_ONLY=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
+  esac
+done
+
+log() { echo "[setup-voiceclip] $*" >&2; }
+die() { echo "[setup-voiceclip] error: $*" >&2; exit 1; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not found on PATH."; }
+
+need tar
+need python3
+command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die "curl or wget is required."
+
+download() {
+  local url="$1" out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -sSL -o "$out" "$url"
+  else
+    wget -q -O "$out" "$url"
+  fi
+}
+
+absolute_path() {
+  # Portable equivalent of `realpath` (not guaranteed present everywhere).
+  python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]))" "$1"
+}
+
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(absolute_path "$OUT_DIR")"
+MODEL_DIR="$OUT_DIR/$MODEL_NAME"
+
+# --- 1. Download + extract the model (skip if already present) ---
+if [ -f "$MODEL_DIR/tokens.txt" ]; then
+  log "Model already present at $MODEL_DIR, skipping download."
+else
+  log "Downloading $MODEL_NAME (~18MB, no login required)..."
+  TARBALL="$OUT_DIR/${MODEL_NAME}.tar.bz2"
+  download "$MODEL_URL" "$TARBALL"
+  log "Extracting..."
+  tar xjf "$TARBALL" -C "$OUT_DIR"
+  rm -f "$TARBALL"
+fi
+
+if [ "$PRECISION" = "int8" ]; then
+  ENCODER_PATH="$MODEL_DIR/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
+  DECODER_PATH="$MODEL_DIR/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
+  JOINER_PATH="$MODEL_DIR/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
+else
+  ENCODER_PATH="$MODEL_DIR/encoder-epoch-12-avg-2-chunk-16-left-64.onnx"
+  DECODER_PATH="$MODEL_DIR/decoder-epoch-12-avg-2-chunk-16-left-64.onnx"
+  JOINER_PATH="$MODEL_DIR/joiner-epoch-12-avg-2-chunk-16-left-64.onnx"
+fi
+TOKENS_PATH="$MODEL_DIR/tokens.txt"
+BPE_MODEL_PATH="$MODEL_DIR/bpe.model"
+
+for f in "$ENCODER_PATH" "$DECODER_PATH" "$JOINER_PATH" "$TOKENS_PATH" "$BPE_MODEL_PATH"; do
+  [ -f "$f" ] || die "Expected model file not found: $f (the release layout may have changed - see docs/GUIDE.md §6)"
+done
+
+# --- 2. Make sure sherpa-onnx-cli (the Python text2token tool) is available ---
+if ! command -v sherpa-onnx-cli >/dev/null 2>&1; then
+  log "sherpa-onnx-cli not found, installing the 'sherpa-onnx' Python package..."
+  need pip3
+  # sherpa-onnx-cli depends on 'click' but some sherpa-onnx releases don't
+  # declare it, so install it explicitly too.
+  pip3 install --quiet sherpa-onnx click || die "Failed to install the sherpa-onnx Python package."
+fi
+command -v sherpa-onnx-cli >/dev/null 2>&1 || die "sherpa-onnx-cli still not on PATH after install (check your Python user-base bin dir is in PATH)."
+python3 -c "import click" 2>/dev/null || { log "Installing missing 'click' dependency..."; pip3 install --quiet click || die "Failed to install 'click'."; }
+
+# --- 3. Generate the keywords file for the trigger phrase ---
+LABEL="$(printf '%s' "$PHRASE" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '_' | sed 's/_\+/_/g; s/^_//; s/_$//')"
+[ -n "$LABEL" ] || die "Could not derive a keyword label from phrase '$PHRASE'."
+
+RAW_KEYWORDS_PATH="$OUT_DIR/keywords_raw.txt"
+KEYWORDS_PATH="$OUT_DIR/keywords.txt"
+
+PHRASE_UPPER="$(printf '%s' "$PHRASE" | tr '[:lower:]' '[:upper:]')"
+echo "${PHRASE_UPPER} :${SCORE} #${THRESHOLD} @${LABEL}" > "$RAW_KEYWORDS_PATH"
+
+log "Generating keywords file for \"$PHRASE\" (label: @$LABEL, score: $SCORE, threshold: $THRESHOLD)..."
+sherpa-onnx-cli text2token \
+  --tokens "$TOKENS_PATH" \
+  --tokens-type bpe \
+  --bpe-model "$BPE_MODEL_PATH" \
+  "$RAW_KEYWORDS_PATH" "$KEYWORDS_PATH"
+
+# --- 4. Write (or print) the KWS_* env vars ---
+if [ "$PRINT_ONLY" -eq 1 ]; then
+  log "Done. Add these to your .env:"
+  echo
+  echo "KWS_ENCODER_PATH=$ENCODER_PATH"
+  echo "KWS_DECODER_PATH=$DECODER_PATH"
+  echo "KWS_JOINER_PATH=$JOINER_PATH"
+  echo "KWS_TOKENS_PATH=$TOKENS_PATH"
+  echo "KWS_KEYWORDS_PATH=$KEYWORDS_PATH"
+  exit 0
+fi
+
+touch "$ENV_FILE"
+TMP_ENV="$(mktemp)"
+grep -vE '^(KWS_ENCODER_PATH|KWS_DECODER_PATH|KWS_JOINER_PATH|KWS_TOKENS_PATH|KWS_KEYWORDS_PATH)=' "$ENV_FILE" > "$TMP_ENV" || true
+{
+  cat "$TMP_ENV"
+  echo "KWS_ENCODER_PATH=$ENCODER_PATH"
+  echo "KWS_DECODER_PATH=$DECODER_PATH"
+  echo "KWS_JOINER_PATH=$JOINER_PATH"
+  echo "KWS_TOKENS_PATH=$TOKENS_PATH"
+  echo "KWS_KEYWORDS_PATH=$KEYWORDS_PATH"
+} > "$ENV_FILE"
+rm -f "$TMP_ENV"
+
+log "Done. Wrote KWS_* paths into $ENV_FILE."
+log "Restart the bot, then run /voiceclip enable in Discord."

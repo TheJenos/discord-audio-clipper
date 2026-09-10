@@ -12,7 +12,8 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "deploy-commands": "node dist/deploy-commands.js",
-    "deploy-commands:dev": "ts-node src/deploy-commands.ts"
+    "deploy-commands:dev": "ts-node src/deploy-commands.ts",
+    "setup-voiceclip": "bash scripts/setup-voiceclip.sh"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
