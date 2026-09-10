@@ -358,7 +358,10 @@ Per-server, once the bot is configured:
   voice channel's own chat; `/voiceclip channel clear` reverts to that
   default. Posting to the voice channel's own chat uses discord.js's
   "sendable channel" support for voice channels directly — no separate text
-  channel is required.
+  channel is required. If posting to a configured channel fails (wrong
+  permissions, deleted channel, etc.), the bot automatically retries in the
+  voice channel's own chat instead of dropping the clip — see
+  [§11](#11-troubleshooting) if neither works.
 - Detection only runs while the bot is actually recording in that guild
   (via `/join` or auto-join) — enabling `/voiceclip` alone doesn't connect
   the bot anywhere.
@@ -604,12 +607,19 @@ not triggering: confirm `KWS_KEYWORDS_PATH` actually contains a line for
 if unsure), and try raising the boosting score / lowering the threshold —
 either by regenerating `keywords_raw.txt` or via `KWS_SCORE`/`KWS_THRESHOLD`.
 
-**"clip that" clips don't get posted anywhere.**
-If a channel was set with `/voiceclip channel set`, confirm the bot still
-has **View Channel** + **Send Messages** there — a since-revoked permission
-fails silently into the console log rather than erroring out to Discord.
-Without a configured channel, clips post in the voice channel's own chat,
-which needs the same permissions on that voice channel.
+**"clip that" clips don't get posted anywhere, or the log shows
+`DiscordAPIError[50001]: Missing Access`.**
+The clip was created fine; posting it failed. `50001` means the bot can't
+see that channel at all — it's missing **View Channel** and/or
+**Send Messages** there (a channel-specific permission overwrite is the
+usual cause, even if the bot's role has those permissions server-wide).
+If a channel was set with `/voiceclip channel set` and posting to it fails
+for any reason, the bot automatically falls back to posting in the voice
+channel's own chat instead — check the console log for which one actually
+failed and why. If *that* also fails, the voice channel itself needs the
+same two permissions. `/voiceclip channel clear` switches back to
+voice-chat-only if you'd rather not chase down a separate channel's
+permissions.
 
 ## 12. Project layout / extending the bot
 
