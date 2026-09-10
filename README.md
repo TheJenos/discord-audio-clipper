@@ -28,6 +28,14 @@ troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
   `/autojoin exclude add|remove <channel>` keeps specific channels (like an
   AFK lobby) from ever triggering it. All of this is saved to disk, so it
   survives a bot restart.
+- `/voiceclip enable` / `/voiceclip disable` turns on saying **"clip that"**
+  out loud to grab a clip hands-free — it posts the last 30 seconds
+  (configurable) to `/voiceclip channel set <channel>` if you've set one, or
+  the voice channel's own text chat otherwise. Detection runs on a free,
+  fully offline [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+  keyword-spotting model — no account, API key, or per-use cost, but it
+  needs a one-time setup step by whoever runs the bot — see
+  [docs/GUIDE.md](docs/GUIDE.md#6-voiceclip-clip-that-setup).
 
 ## Setup
 
@@ -76,6 +84,10 @@ All settings live in `.env` (see `.env.example`):
 | `AUTO_JOIN_MIN_MEMBERS`  | Humans required in a channel to trigger auto-join         | `4`     |
 | `LEAVE_GRACE_SECONDS`    | Delay before auto-leaving an emptied channel               | `10`    |
 | `DATA_DIR`               | Where per-guild settings are persisted (JSON file)         | `./data`|
+| `KWS_ENCODER_PATH`, `KWS_DECODER_PATH`, `KWS_JOINER_PATH`, `KWS_TOKENS_PATH` | Paths to the sherpa-onnx keyword-spotting model's files, required for `/voiceclip` | — |
+| `KWS_KEYWORDS_PATH`      | Path to the generated "clip that" keywords file, required for `/voiceclip` | — |
+| `KWS_SCORE`, `KWS_THRESHOLD` | Optional overrides for detection sensitivity          | *(from file)* |
+| `WAKE_WORD_CLIP_SECONDS` | How many seconds "clip that" grabs                         | `30`    |
 
 `/clip` accepts an optional `seconds` argument, capped at
 `RECORD_WINDOW_SECONDS`.
@@ -85,6 +97,13 @@ it on and `/autojoin disable` to turn it back off. It only kicks in while the
 bot isn't already connected in that server, and skips any channel added with
 `/autojoin exclude add`. These settings live in `<DATA_DIR>/settings.json`
 (gitignored) and are read back on startup.
+
+`/voiceclip` behaves the same way, but `/voiceclip enable` refuses to turn on
+until all five `KWS_*` paths are set. Run `npm run setup-voiceclip` to fetch
+the free model, generate a "clip that" keywords file, and write those paths
+into `.env` automatically — see
+[docs/GUIDE.md](docs/GUIDE.md#6-voiceclip-clip-that-setup) for details and
+manual steps.
 
 ## Notes
 

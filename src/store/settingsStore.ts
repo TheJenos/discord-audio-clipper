@@ -6,11 +6,15 @@ import { config } from '../config';
 export interface GuildSettings {
   autoJoinEnabled: boolean;
   autoJoinExcludedChannelIds: string[];
+  voiceClipEnabled: boolean;
+  voiceClipChannelId: string | null;
 }
 
 const DEFAULT_SETTINGS: GuildSettings = {
   autoJoinEnabled: false,
   autoJoinExcludedChannelIds: [],
+  voiceClipEnabled: false,
+  voiceClipChannelId: null,
 };
 
 const dataFile = path.join(config.dataDir, 'settings.json');
@@ -73,4 +77,16 @@ export function includeChannel(guildId: string, channelId: string): void {
 
 export function isChannelExcluded(guildId: string, channelId: string): boolean {
   return getGuildSettings(guildId).autoJoinExcludedChannelIds.includes(channelId);
+}
+
+export function setVoiceClipEnabled(guildId: string, enabled: boolean): void {
+  updateGuildSettings(guildId, { voiceClipEnabled: enabled });
+}
+
+export function isVoiceClipEnabled(guildId: string): boolean {
+  return getGuildSettings(guildId).voiceClipEnabled;
+}
+
+export function setVoiceClipChannel(guildId: string, channelId: string | null): void {
+  updateGuildSettings(guildId, { voiceClipChannelId: channelId });
 }

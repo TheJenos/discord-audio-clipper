@@ -4,9 +4,10 @@ import joinCommand from './commands/join';
 import leaveCommand from './commands/leave';
 import clipCommand from './commands/clip';
 import autojoinCommand from './commands/autojoin';
+import voiceclipCommand from './commands/voiceclip';
 
-const commands = [joinCommand, leaveCommand, clipCommand, autojoinCommand].map((command) =>
-  command.data.toJSON()
+const commands = [joinCommand, leaveCommand, clipCommand, autojoinCommand, voiceclipCommand].map(
+  (command) => command.data.toJSON()
 );
 
 const rest = new REST().setToken(config.token);

@@ -10,13 +10,14 @@ import joinCommand from './commands/join';
 import leaveCommand from './commands/leave';
 import clipCommand from './commands/clip';
 import autojoinCommand from './commands/autojoin';
+import voiceclipCommand from './commands/voiceclip';
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
 client.commands = new Collection<string, Command>();
-for (const command of [joinCommand, leaveCommand, clipCommand, autojoinCommand]) {
+for (const command of [joinCommand, leaveCommand, clipCommand, autojoinCommand, voiceclipCommand]) {
   client.commands.set(command.data.name, command);
 }
 

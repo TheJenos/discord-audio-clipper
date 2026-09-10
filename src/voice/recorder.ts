@@ -1,12 +1,23 @@
+import { EventEmitter } from 'node:events';
 import { EndBehaviorType, VoiceConnection, VoiceReceiver } from '@discordjs/voice';
 import { opus as prismOpus } from 'prism-media';
 import { PCMRingBuffer, SAMPLE_RATE, CHANNELS } from './ringBuffer';
+import { WakeWordDetector, isConfigured as isWakeWordConfigured } from './wakeWord';
+import * as settingsStore from '../store/settingsStore';
 import { config } from '../config';
 
 const recordings = new Map<string, GuildRecording>();
 
-export class GuildRecording {
+export interface GuildRecordingEvents {
+  wakeword: [{ userId: string }];
+}
+
+// Emits 'wakeword' (with the speaking userId) whenever "clip that" is
+// detected in an active speaker's audio, if /voiceclip is enabled for this
+// guild. See voice/wakeWord.ts and voice/wakeClip.ts.
+export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
   readonly connection: VoiceConnection;
+  readonly guildId: string;
   readonly windowMs: number;
   readonly startedAtMs: number;
   readonly userBuffers = new Map<string, PCMRingBuffer>();
@@ -15,8 +26,10 @@ export class GuildRecording {
   private readonly activeSubscriptions = new Set<string>();
   private readonly onSpeakingStart: (userId: string) => void;
 
-  constructor(connection: VoiceConnection) {
+  constructor(connection: VoiceConnection, guildId: string) {
+    super();
     this.connection = connection;
+    this.guildId = guildId;
     this.windowMs = config.recordWindowSeconds * 1000;
     this.startedAtMs = Date.now();
     this.receiver = connection.receiver;
@@ -42,24 +55,43 @@ export class GuildRecording {
     );
 
     const activeBuffer = buffer;
-    pcmStream.on('data', (chunk: Buffer) => activeBuffer.write(chunk, Date.now()));
+    const detector = this.createWakeWordDetector(userId);
 
-    const cleanup = () => this.activeSubscriptions.delete(userId);
+    pcmStream.on('data', (chunk: Buffer) => {
+      activeBuffer.write(chunk, Date.now());
+      detector?.push(chunk);
+    });
+
+    const cleanup = () => {
+      this.activeSubscriptions.delete(userId);
+      detector?.destroy();
+    };
     opusStream.on('end', cleanup);
     opusStream.on('error', cleanup);
     pcmStream.on('error', cleanup);
+  }
+
+  private createWakeWordDetector(userId: string): WakeWordDetector | null {
+    if (!settingsStore.isVoiceClipEnabled(this.guildId) || !isWakeWordConfigured()) return null;
+    try {
+      return new WakeWordDetector(() => this.emit('wakeword', { userId }));
+    } catch (err) {
+      console.error(`Failed to start wake-word detector in guild ${this.guildId}:`, err);
+      return null;
+    }
   }
 
   destroy(): void {
     this.receiver.speaking.removeListener('start', this.onSpeakingStart);
     this.userBuffers.clear();
     this.activeSubscriptions.clear();
+    this.removeAllListeners();
   }
 }
 
 export function startRecording(guildId: string, connection: VoiceConnection): GuildRecording {
   stopRecording(guildId);
-  const recording = new GuildRecording(connection);
+  const recording = new GuildRecording(connection, guildId);
   recordings.set(guildId, recording);
   return recording;
 }
