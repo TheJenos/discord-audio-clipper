@@ -717,12 +717,28 @@ through the `'wakeword'` event instead of the current bare detection.
 48kHz/stereo/16-bit PCM (matching `SAMPLE_RATE`/`CHANNELS` in
 `voice/ringBuffer.ts`), chosen specifically so `notifySound.ts` never needs
 ffmpeg at playback time — `@discordjs/voice` Opus-encodes it directly via
-the same `opusscript` codec already used for recording. Regenerate it with
-`ffmpeg-static`'s binary, e.g.:
+the same `opusscript` codec already used for recording. It's deliberately a
+*soft* cue: two overlapping notes (a consonant major third, C5→E5) with a
+gentle fade-in and an exponential fade-out on each, mixed together rather
+than played back-to-back — a sharp attack or two abrupt sequential beeps
+reads as a system alert, which is the opposite of what a "someone just
+casually clipped that" cue should feel like. Regenerate or retune it with
+`ffmpeg-static`'s binary:
 ```bash
-node -e "console.log(require('ffmpeg-static'))"   # prints the ffmpeg path
-<that path> -f lavfi -i "sine=frequency=880:duration=0.2" \
-  -ar 48000 -ac 2 -f s16le assets/clip-notify.pcm
+FFMPEG=$(node -e "console.log(require('ffmpeg-static'))")
+"$FFMPEG" -y \
+  -f lavfi -i "sine=frequency=523.25:duration=0.3" \
+  -f lavfi -i "sine=frequency=659.25:duration=0.35" \
+  -filter_complex "\
+[0:a]afade=t=in:st=0:d=0.03,afade=t=out:st=0.1:d=0.2:curve=exp,volume=0.22[a];\
+[1:a]adelay=120|120,afade=t=in:st=0.12:d=0.04:curve=exp,afade=t=out:st=0.22:d=0.2:curve=exp,volume=0.22[b];\
+[a][b]amix=inputs=2:duration=longest:dropout_transition=0,volume=2.6[out]" \
+  -map "[out]" -ar 48000 -ac 2 -f s16le assets/clip-notify.pcm
 ```
-Keep it short (a few hundred ms) and not too loud — it plays into a live
-voice channel every time someone triggers `/voiceclip`.
+Keep it short (well under a second) and quiet — it plays into a live voice
+channel over whatever people are already saying. `afade`'s `st`/`d` control
+when each fade starts and how long it takes; nudge `frequency` for pitch,
+`adelay` for how much the two notes overlap, and the trailing `volume=2.6`
+for overall loudness (peak ≈ -32dB / RMS ≈ -40dB at that setting — check
+with `ffmpeg -f s16le -ar 48000 -ac 2 -i assets/clip-notify.pcm -af astats
+-f null -` after changing it).

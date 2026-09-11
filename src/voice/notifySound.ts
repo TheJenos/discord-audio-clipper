@@ -10,10 +10,13 @@ import {
   createAudioResource,
 } from '@discordjs/voice';
 
-// Raw 48kHz/stereo/16-bit PCM - the same format the rest of the pipeline
+// A soft two-note chime (overlapping notes, gentle attack, exponential
+// decay - deliberately not a sharp two-tone "alert" beep), pre-rendered as
+// raw 48kHz/stereo/16-bit PCM - the same format the rest of the pipeline
 // already uses (see ringBuffer.ts), so this goes straight through
 // @discordjs/voice's built-in Opus encoder with no ffmpeg step at playback
-// time. Regenerate with: ffmpeg -f lavfi -i "sine=..." ... -f s16le assets/clip-notify.pcm
+// time. See docs/GUIDE.md's "Changing the confirmation chime" section to
+// regenerate or retune it.
 const SOUND_PATH = path.join(process.cwd(), 'assets', 'clip-notify.pcm');
 
 /**
