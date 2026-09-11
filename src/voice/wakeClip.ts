@@ -2,6 +2,7 @@ import { AttachmentBuilder } from 'discord.js';
 import type { VoiceBasedChannel } from 'discord.js';
 import type { GuildRecording } from './recorder';
 import * as mixer from './mixer';
+import { playClipNotification } from './notifySound';
 import * as settingsStore from '../store/settingsStore';
 import { config } from '../config';
 
@@ -10,7 +11,7 @@ import { config } from '../config';
 const DEBOUNCE_MS = 10_000;
 const lastTriggerAtByGuild = new Map<string, number>();
 
-// Wires a recording's "clip that" detections to posting a clip. Called once
+// Wires a recording's "please clip that" detections to posting a clip. Called once
 // per connection, right after recording starts.
 export function attachWakeWordHandler(channel: VoiceBasedChannel, recording: GuildRecording): void {
   recording.on('wakeword', () => {
@@ -26,15 +27,17 @@ async function handleWake(channel: VoiceBasedChannel, recording: GuildRecording)
   if (now - (lastTriggerAtByGuild.get(guildId) ?? 0) < DEBOUNCE_MS) return;
   lastTriggerAtByGuild.set(guildId, now);
 
+  playClipNotification(recording.connection);
+
   const clip = await mixer.createClip(recording, config.wakeWordClipSeconds);
   if (!clip) return;
 
   try {
-    const content = `🎙️ Someone said "clip that" — here's the last ${clip.seconds} seconds.`;
+    const content = `🎙️ Someone said "please clip that" — here's the last ${clip.seconds} seconds.`;
     const posted = await postToFirstAvailable(channel, clip.filePath, content);
     if (!posted) {
       console.error(
-        `Could not post the "clip that" clip anywhere in guild ${guildId} - the bot has no channel ` +
+        `Could not post the "please clip that" clip anywhere in guild ${guildId} - the bot has no channel ` +
           'it can send to there (check View Channel + Send Messages permissions).'
       );
     }

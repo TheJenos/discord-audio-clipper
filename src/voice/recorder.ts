@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { EndBehaviorType, VoiceConnection, VoiceReceiver } from '@discordjs/voice';
 import { opus as prismOpus } from 'prism-media';
 import { PCMRingBuffer, SAMPLE_RATE, CHANNELS } from './ringBuffer';
-import { WakeWordDetector, isConfigured as isWakeWordConfigured } from './wakeWord';
+import { WakeWordEngine, createWakeWordEngine, isConfigured as isWakeWordConfigured } from './wakeWordEngine';
 import * as settingsStore from '../store/settingsStore';
 import { config } from '../config';
 
@@ -12,7 +12,7 @@ export interface GuildRecordingEvents {
   wakeword: [{ userId: string }];
 }
 
-// Emits 'wakeword' (with the speaking userId) whenever "clip that" is
+// Emits 'wakeword' (with the speaking userId) whenever "please clip that" is
 // detected in an active speaker's audio, if /voiceclip is enabled for this
 // guild. See voice/wakeWord.ts and voice/wakeClip.ts.
 export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
@@ -71,14 +71,9 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
     pcmStream.on('error', cleanup);
   }
 
-  private createWakeWordDetector(userId: string): WakeWordDetector | null {
+  private createWakeWordDetector(userId: string): WakeWordEngine | null {
     if (!settingsStore.isVoiceClipEnabled(this.guildId) || !isWakeWordConfigured()) return null;
-    try {
-      return new WakeWordDetector(() => this.emit('wakeword', { userId }));
-    } catch (err) {
-      console.error(`Failed to start wake-word detector in guild ${this.guildId}:`, err);
-      return null;
-    }
+    return createWakeWordEngine(userId, () => this.emit('wakeword', { userId }));
   }
 
   destroy(): void {
@@ -90,6 +85,9 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
 }
 
 export function startRecording(guildId: string, connection: VoiceConnection): GuildRecording {
+  if (recordings.has(guildId)) {
+    console.log(`Restarting recording for guild ${guildId} (buffers so far are lost).`);
+  }
   stopRecording(guildId);
   const recording = new GuildRecording(connection, guildId);
   recordings.set(guildId, recording);

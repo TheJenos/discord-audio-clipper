@@ -28,8 +28,9 @@ troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
   `/autojoin exclude add|remove <channel>` keeps specific channels (like an
   AFK lobby) from ever triggering it. All of this is saved to disk, so it
   survives a bot restart.
-- `/voiceclip enable` / `/voiceclip disable` turns on saying **"clip that"**
-  out loud to grab a clip hands-free — it posts the last 30 seconds
+- `/voiceclip enable` / `/voiceclip disable` turns on saying **"please clip that"**
+  out loud to grab a clip hands-free — the bot plays a short chime into the
+  voice channel to confirm it heard you, then posts the last 30 seconds
   (configurable) to `/voiceclip channel set <channel>` if you've set one, or
   the voice channel's own text chat otherwise. Detection runs on a free,
   fully offline [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
@@ -44,9 +45,9 @@ troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
    Under **Bot**, copy the token. Under **OAuth2 → General**, copy the
    Application (Client) ID.
 2. Invite the bot to your server with the `bot` and `applications.commands`
-   scopes, and the **Connect** + **Speak** + **View Channel** permissions
-   (Speak isn't strictly needed since the bot never talks, but some clients
-   require it to fully join).
+   scopes, and the **Connect** + **Speak** + **View Channel** permissions.
+   Speak is used for the short "heard you" chime `/voiceclip` plays back —
+   without it, everything else still works, you just lose that audio cue.
 3. Install dependencies:
    ```bash
    npm install
@@ -85,9 +86,12 @@ All settings live in `.env` (see `.env.example`):
 | `LEAVE_GRACE_SECONDS`    | Delay before auto-leaving an emptied channel               | `10`    |
 | `DATA_DIR`               | Where per-guild settings are persisted (JSON file)         | `./data`|
 | `KWS_ENCODER_PATH`, `KWS_DECODER_PATH`, `KWS_JOINER_PATH`, `KWS_TOKENS_PATH` | Paths to the sherpa-onnx keyword-spotting model's files, required for `/voiceclip` | — |
-| `KWS_KEYWORDS_PATH`      | Path to the generated "clip that" keywords file, required for `/voiceclip` | — |
+| `KWS_KEYWORDS_PATH`      | Path to the generated "please clip that" keywords file, required for `/voiceclip` | — |
 | `KWS_SCORE`, `KWS_THRESHOLD` | Optional overrides for detection sensitivity          | *(from file)* |
-| `WAKE_WORD_CLIP_SECONDS` | How many seconds "clip that" grabs                         | `30`    |
+| `WAKE_WORD_CLIP_SECONDS` | How many seconds "please clip that" grabs                         | `30`    |
+| `ASR_ENCODER_PATH`, `ASR_DECODER_PATH`, `ASR_TOKENS_PATH` | Paths to an offline sherpa-onnx Whisper model, for an optional second trigger check by transcription instead of keyword spotting | — |
+| `WAKE_WORD_PHRASES`      | Comma-separated trigger phrases the transcription check matches   | `please clip that` |
+| `VERBOSE` (or `--verbose`) | Logs every transcript the transcription check produces, not just ones that match a trigger phrase | off |
 
 `/clip` accepts an optional `seconds` argument, capped at
 `RECORD_WINDOW_SECONDS`.
@@ -99,11 +103,14 @@ bot isn't already connected in that server, and skips any channel added with
 (gitignored) and are read back on startup.
 
 `/voiceclip` behaves the same way, but `/voiceclip enable` refuses to turn on
-until all five `KWS_*` paths are set. Run `npm run setup-voiceclip` to fetch
-the free model, generate a "clip that" keywords file, and write those paths
-into `.env` automatically — see
+until all five `KWS_*` paths (or all three `ASR_*` paths) are set. Run
+`npm run setup-voiceclip` to fetch the free KWS model, generate a "please
+clip that" keywords file, and write those paths into `.env` automatically.
+The `ASR_*` transcription check is optional and independent of KWS — either
+one detecting the phrase triggers a clip — and can be set up the same way
+with `npm run setup-voiceclip -- --with-asr`. See
 [docs/GUIDE.md](docs/GUIDE.md#6-voiceclip-clip-that-setup) for details and
-manual steps.
+manual steps for both.
 
 ## Notes
 

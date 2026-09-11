@@ -1,9 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { KeywordSpotter, OnlineStream } from 'sherpa-onnx-node';
 import { config } from '../config';
-import { FRAME_BYTES, SAMPLE_RATE } from './ringBuffer';
-
-const TARGET_SAMPLE_RATE = 16000;
-const DECIMATION_RATIO = SAMPLE_RATE / TARGET_SAMPLE_RATE;
+import { TARGET_SAMPLE_RATE, downsampleToMono16k } from './downsample';
 
 export function isConfigured(): boolean {
   return Boolean(
@@ -56,43 +55,36 @@ function getSpotter(): KeywordSpotter {
 
 /**
  * Feeds a single speaker's 48kHz stereo PCM stream into its own
- * sherpa-onnx keyword-spotting stream to detect the "clip that" wake word,
- * downsampling to the mono rate the model expects along the way.
+ * sherpa-onnx keyword-spotting stream to detect the "please clip that" wake word,
+ * downmixing to mono and downsampling to the model's expected
+ * TARGET_SAMPLE_RATE along the way.
  */
 export class WakeWordDetector {
   private readonly stream: OnlineStream;
-  private phase = 0;
-  private accumulator = 0;
+  private readonly debugChunks: Int16Array[] | null = config.kwsDebugAudioDir ? [] : null;
 
-  constructor(private readonly onDetected: () => void) {
+  constructor(
+    private readonly onDetected: () => void,
+    private readonly debugLabel?: string
+  ) {
     this.stream = getSpotter().createStream();
   }
 
   /** Feed a chunk of 48kHz stereo, 16-bit PCM as decoded by the recorder. */
   push(chunk: Buffer): void {
-    const frameCount = Math.floor(chunk.length / FRAME_BYTES);
-    if (frameCount === 0) return;
+    const samples = downsampleToMono16k(chunk);
+    if (samples.length === 0) return;
 
-    const samples = new Float32Array(Math.ceil(frameCount / DECIMATION_RATIO));
-    let sampleCount = 0;
-
-    for (let i = 0; i < frameCount; i++) {
-      const offset = i * FRAME_BYTES;
-      const left = chunk.readInt16LE(offset);
-      const right = chunk.readInt16LE(offset + 2);
-      this.accumulator += (left + right) / 2;
-      this.phase++;
-
-      if (this.phase < DECIMATION_RATIO) continue;
-      this.phase = 0;
-      samples[sampleCount++] = this.accumulator / DECIMATION_RATIO / 32768;
-      this.accumulator = 0;
+    if (this.debugChunks) {
+      const pcm16 = new Int16Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768)));
+      }
+      this.debugChunks.push(pcm16);
     }
 
-    if (sampleCount === 0) return;
-
     const spotter = getSpotter();
-    this.stream.acceptWaveform({ samples: samples.subarray(0, sampleCount), sampleRate: TARGET_SAMPLE_RATE });
+    this.stream.acceptWaveform({ samples, sampleRate: TARGET_SAMPLE_RATE });
 
     while (spotter.isReady(this.stream)) {
       spotter.decode(this.stream);
@@ -100,11 +92,50 @@ export class WakeWordDetector {
 
     if (spotter.getResult(this.stream).keyword) {
       spotter.reset(this.stream);
+      console.log(`Wake word detected for user`);
       this.onDetected();
     }
   }
 
   // No explicit native handle to release - the underlying stream is
   // reclaimed by the addon's own finalizer once this is garbage collected.
-  destroy(): void {}
+  // If KWS_DEBUG_AUDIO_DIR is set, this is also where the buffered audio for
+  // this speaking session gets flushed to a .wav file.
+  destroy(): void {
+    if (!this.debugChunks || this.debugChunks.length === 0) return;
+    try {
+      writeDebugWav(config.kwsDebugAudioDir!, this.debugLabel, this.debugChunks);
+    } catch (err) {
+      console.error('Failed to write wake-word debug audio:', err);
+    }
+  }
+}
+
+// Dumps exactly what was fed to the KWS model (mono, TARGET_SAMPLE_RATE,
+// 16-bit PCM) as a standalone .wav file, so a person can listen to what the
+// detector heard when diagnosing missed/false wake-word triggers.
+function writeDebugWav(dir: string, label: string | undefined, chunks: Int16Array[]): void {
+  const totalSamples = chunks.reduce((sum, c) => sum + c.length, 0);
+  const dataSize = totalSamples * 2;
+
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(TARGET_SAMPLE_RATE, 24);
+  header.writeUInt32LE(TARGET_SAMPLE_RATE * 2, 28); // byte rate
+  header.writeUInt16LE(2, 32); // block align
+  header.writeUInt16LE(16, 34); // bits per sample
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  const dataBuffers = chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength));
+
+  fs.mkdirSync(dir, { recursive: true });
+  const filename = `wakeword-${label ?? 'unknown'}-${Date.now()}.wav`;
+  fs.writeFileSync(path.join(dir, filename), Buffer.concat([header, ...dataBuffers]));
 }

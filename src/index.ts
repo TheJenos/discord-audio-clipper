@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, Collection, Guild } from 'discord.js';
-import { getVoiceConnection } from '@discordjs/voice';
+import { getVoiceConnection, getVoiceConnections } from '@discordjs/voice';
 import { config } from './config';
 import * as recorder from './voice/recorder';
 import { connectAndRecord } from './voice/connect';
@@ -21,8 +21,24 @@ for (const command of [joinCommand, leaveCommand, clipCommand, autojoinCommand, 
   client.commands.set(command.data.name, command);
 }
 
-client.once('clientReady', (readyClient) => {
+// Convenience for local development: auto-join this channel on startup if it
+// exists, so there's no need to manually /join on every dev-server restart.
+const DEV_AUTO_JOIN_CHANNEL_ID = '707093966490828813';
+
+client.once('clientReady', async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+
+  if (process.env.TS_NODE_DEV) {
+    try {
+      const channel = await readyClient.channels.fetch(DEV_AUTO_JOIN_CHANNEL_ID);
+      if (channel?.isVoiceBased()) {
+        await connectAndRecord(channel);
+        console.log(`[dev] Auto-joined voice channel ${channel.name}`);
+      }
+    } catch (err) {
+      console.error(`[dev] Could not auto-join channel ${DEV_AUTO_JOIN_CHANNEL_ID}:`, err);
+    }
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -107,5 +123,33 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     console.error(`Auto-join failed in guild ${guild.id}:`, err);
   }
 });
+
+// Disconnects from every voice channel the bot is in so it doesn't linger
+// after the process exits (e.g. on Ctrl+C or a dev-mode restart).
+async function shutdown(): Promise<void> {
+  for (const [guildId, connection] of getVoiceConnections()) {
+    leaveGrace.cancelScheduledLeave(guildId);
+    recorder.stopRecording(guildId);
+
+    try {
+      // Properly disconnect by first signaling the adapter, then destroy
+      // https://discordjs.guide/voice/voice-connections.html#manual-cleanup
+      const channel = connection.joinConfig.channelId;
+      await connection.disconnect();
+      connection.destroy();
+
+      console.log(`[dev] Properly disconnected from voice channel ${channel}`);
+    } catch (err) {
+      console.error(`[dev] Error disconnecting from voice connection in guild ${guildId}:`, err);
+      // Still attempt destroy
+      connection.destroy();
+    }
+  }
+  await client.destroy();
+  process.exit(0);
+}
+
+process.on('SIGINT', () => { shutdown(); });
+process.on('SIGTERM', () => { shutdown(); });
 
 client.login(config.token);
