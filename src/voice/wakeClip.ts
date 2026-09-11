@@ -14,14 +14,19 @@ const lastTriggerAtByGuild = new Map<string, number>();
 // Wires a recording's "please clip that" detections to posting a clip. Called once
 // per connection, right after recording starts.
 export function attachWakeWordHandler(channel: VoiceBasedChannel, recording: GuildRecording): void {
-  recording.on('wakeword', () => {
-    void handleWake(channel, recording).catch((err) => {
+  recording.on('wakeword', ({ userId, phrase }) => {
+    void handleWake(channel, recording, userId, phrase).catch((err) => {
       console.error(`Failed to auto-clip on wake word in guild ${channel.guild.id}:`, err);
     });
   });
 }
 
-async function handleWake(channel: VoiceBasedChannel, recording: GuildRecording): Promise<void> {
+async function handleWake(
+  channel: VoiceBasedChannel,
+  recording: GuildRecording,
+  userId: string,
+  phrase: string
+): Promise<void> {
   const guildId = channel.guild.id;
   const now = Date.now();
   if (now - (lastTriggerAtByGuild.get(guildId) ?? 0) < DEBOUNCE_MS) return;
@@ -33,11 +38,11 @@ async function handleWake(channel: VoiceBasedChannel, recording: GuildRecording)
   if (!clip) return;
 
   try {
-    const content = `🎙️ Someone said "please clip that" — here's the last ${clip.seconds} seconds.`;
+    const content = `🎙️ <@${userId}> said "${phrase}" — here's the last ${clip.seconds} seconds.`;
     const posted = await postToFirstAvailable(channel, clip.filePath, content);
     if (!posted) {
       console.error(
-        `Could not post the "please clip that" clip anywhere in guild ${guildId} - the bot has no channel ` +
+        `Could not post the "${phrase}" clip anywhere in guild ${guildId} - the bot has no channel ` +
           'it can send to there (check View Channel + Send Messages permissions).'
       );
     }

@@ -40,7 +40,7 @@ MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/${
 ASR_MODEL_NAME="sherpa-onnx-whisper-tiny.en"
 ASR_MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${ASR_MODEL_NAME}.tar.bz2"
 
-PHRASE="please clip that,please clip it,clip that,clip it,click that,flip that,click it,flip it,laugh"
+PHRASE="please clip that,please clip it,clip that,clip it,click that,flip that,click it,flip it"
 SCORE="2.0"
 THRESHOLD="0.35"
 OUT_DIR="data/kws-model"

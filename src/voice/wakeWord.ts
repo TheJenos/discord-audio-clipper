@@ -64,7 +64,7 @@ export class WakeWordDetector {
   private readonly debugChunks: Int16Array[] | null = config.kwsDebugAudioDir ? [] : null;
 
   constructor(
-    private readonly onDetected: () => void,
+    private readonly onDetected: (phrase: string) => void,
     private readonly debugLabel?: string
   ) {
     this.stream = getSpotter().createStream();
@@ -90,10 +90,15 @@ export class WakeWordDetector {
       spotter.decode(this.stream);
     }
 
-    if (spotter.getResult(this.stream).keyword) {
+    const result = spotter.getResult(this.stream);
+    if (result.keyword) {
       spotter.reset(this.stream);
-      console.log(`Wake word detected for user`);
-      this.onDetected();
+      // Keyword labels are derived from the phrase text with spaces
+      // replaced by underscores (see scripts/setup-voiceclip.sh) - reverse
+      // that for a human-readable phrase to report back.
+      const phrase = result.keyword.replace(/_/g, ' ').trim();
+      console.log(`Wake word detected for ${this.debugLabel ?? 'unknown'} (phrase: "${phrase}")`);
+      this.onDetected(phrase);
     }
   }
 

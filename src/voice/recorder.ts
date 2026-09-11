@@ -9,12 +9,13 @@ import { config } from '../config';
 const recordings = new Map<string, GuildRecording>();
 
 export interface GuildRecordingEvents {
-  wakeword: [{ userId: string }];
+  wakeword: [{ userId: string; phrase: string }];
 }
 
-// Emits 'wakeword' (with the speaking userId) whenever "please clip that" is
-// detected in an active speaker's audio, if /voiceclip is enabled for this
-// guild. See voice/wakeWord.ts and voice/wakeClip.ts.
+// Emits 'wakeword' (with the speaking userId and the matched phrase)
+// whenever a configured trigger phrase is detected in an active speaker's
+// audio, if /voiceclip is enabled for this guild. See voice/wakeWord.ts,
+// voice/transcriber.ts, and voice/wakeClip.ts.
 export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
   readonly connection: VoiceConnection;
   readonly guildId: string;
@@ -73,7 +74,7 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
 
   private createWakeWordDetector(userId: string): WakeWordEngine | null {
     if (!settingsStore.isVoiceClipEnabled(this.guildId) || !isWakeWordConfigured()) return null;
-    return createWakeWordEngine(userId, () => this.emit('wakeword', { userId }));
+    return createWakeWordEngine(userId, (phrase) => this.emit('wakeword', { userId, phrase }));
   }
 
   destroy(): void {

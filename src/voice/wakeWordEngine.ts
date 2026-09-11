@@ -19,7 +19,7 @@ export interface WakeWordEngine {
  * hears "please clip that". Only guild-level enablement and per-engine
  * config gate creation; callers don't need to know which engine(s) are on.
  */
-export function createWakeWordEngine(userId: string, onDetected: () => void): WakeWordEngine | null {
+export function createWakeWordEngine(userId: string, onDetected: (phrase: string) => void): WakeWordEngine | null {
   const detectors: WakeWordEngine[] = [];
 
   if (isKwsConfigured()) {

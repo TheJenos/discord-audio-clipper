@@ -127,10 +127,12 @@ flowchart TB
   transcript against configurable `WAKE_WORD_PHRASES` instead of a fixed
   keywords file (see [§6](#6-voiceclip-clip-that-setup)).
 - **`voice/wakeClip.ts`** listens for a `GuildRecording`'s `'wakeword'`
-  event, debounces repeated triggers, plays a confirmation chime
+  event (which carries the triggering `userId` and the matched `phrase`),
+  debounces repeated triggers, plays a confirmation chime
   (`voice/notifySound.ts`) right away, then clips the last
-  `WAKE_WORD_CLIP_SECONDS` via the mixer and posts it to the configured
-  channel (or the voice channel's own chat).
+  `WAKE_WORD_CLIP_SECONDS` via the mixer and posts it - mentioning who
+  triggered it and which phrase they said - to the configured channel (or
+  the voice channel's own chat).
 - **`voice/notifySound.ts`** plays a short pre-rendered chime
   (`assets/clip-notify.pcm`) into the voice channel via a throwaway
   `AudioPlayer` — the only place the bot outputs audio.

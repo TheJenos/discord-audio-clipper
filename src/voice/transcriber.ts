@@ -71,7 +71,7 @@ export class TranscriptionWakeWordDetector {
   private sampleCount = 0;
 
   constructor(
-    private readonly onDetected: () => void,
+    private readonly onDetected: (phrase: string) => void,
     private readonly debugLabel?: string
   ) {
     // Touch the shared recognizer eagerly so a broken/misconfigured model
@@ -114,9 +114,13 @@ export class TranscriptionWakeWordDetector {
         if (text) {
           debugLog(`Transcription: ${text}`);
         }
-        if (text && this.phrases.some((phrase) => text.includes(phrase))) {
-          console.log(`Wake word detected via transcription for ${this.debugLabel ?? 'unknown'}: "${result.text}"`);
-          this.onDetected();
+        const matchIndex = text ? this.phrases.findIndex((phrase) => text.includes(phrase)) : -1;
+        if (matchIndex !== -1) {
+          const matchedPhrase = config.wakeWordPhrases[matchIndex];
+          console.log(
+            `Wake word detected via transcription for ${this.debugLabel ?? 'unknown'}: "${result.text}" (matched phrase: "${matchedPhrase}")`
+          );
+          this.onDetected(matchedPhrase);
         }
       })
       .catch((err) => {
