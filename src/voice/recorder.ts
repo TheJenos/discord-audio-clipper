@@ -58,8 +58,14 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
     const detector = this.createWakeWordDetector(userId);
 
     pcmStream.on('data', (chunk: Buffer) => {
+      // Write to the ring buffer immediately - this must never wait on the
+      // wake-word decoder, which does real (if small) CPU-bound inference
+      // work. Deferring it past the current I/O poll phase means a slow
+      // decode can't delay this chunk's write, the next chunk's 'data'
+      // event, or Discord's voice/gateway heartbeats - all of which share
+      // this same event loop.
       activeBuffer.write(chunk, Date.now());
-      detector?.push(chunk);
+      if (detector) setImmediate(() => detector.push(chunk));
     });
 
     const cleanup = () => {
@@ -90,6 +96,9 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
 }
 
 export function startRecording(guildId: string, connection: VoiceConnection): GuildRecording {
+  if (recordings.has(guildId)) {
+    console.log(`Restarting recording for guild ${guildId} (buffers so far are lost).`);
+  }
   stopRecording(guildId);
   const recording = new GuildRecording(connection, guildId);
   recordings.set(guildId, recording);

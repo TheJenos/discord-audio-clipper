@@ -545,6 +545,16 @@ Notes:
   currently-speaking user gets their own lightweight decoding stream while
   `/voiceclip` is enabled; CPU use scales with how many people are talking
   concurrently across all guilds, not with the number of guilds themselves.
+- Wake-word decoding is deferred with `setImmediate` so it can never delay
+  the ring buffer write for the audio chunk that triggered it (recording
+  correctness doesn't depend on `/voiceclip` keeping up). It still runs on
+  the same single event loop as voice I/O and the Discord gateway/voice
+  heartbeats, though — on an underpowered CPU with several people talking
+  at once, a KWS backlog can still slow things down enough to affect voice
+  connection stability. If you see reconnects or resets correlating with
+  `/voiceclip` being enabled, that's the mechanism to suspect first; the
+  int8 model (the default `setup-voiceclip.sh` downloads) is the lighter
+  option over `--fp32`.
 
 ## 11. Troubleshooting
 
@@ -586,6 +596,24 @@ Expected if the bot hasn't been connected that long yet — the reply says so
 explicitly. If it's short even on a long-running session, check
 `RECORD_WINDOW_SECONDS`; the buffer can never hold more than that regardless
 of what `/clip`'s `seconds` argument asks for.
+
+**`/clip <seconds>` seems to return the *start* of the session instead of
+the most recent audio.**
+This is the same "hasn't been connected that long yet" clamp above, just
+easy to misread as reversed if the session is actually much shorter than it
+looks — `mixer.createClip` clamps the window to `now - startedAtMs`, so if
+the recording session itself is short, "the last N seconds" and "the whole
+session so far" are the same thing. Check the process log for
+`Restarting recording for guild ...` around the time you tested — a
+`GuildRecording` (and its `startedAtMs`) is created fresh on every `/join`
+or auto-join, so if the bot's process is crashing/restarting (check
+`pm2 list` for a climbing restart count and low uptime) or reconnecting
+more often than expected, every session looks freshly started and `/clip`
+can never reach back further than however long the *current* session has
+run. If this correlates with `/voiceclip` being enabled, see the CPU note
+in [§10](#10-running-in-production) — wake-word decoding runs on the same
+event loop as voice I/O and Discord's heartbeats, so a decoder that's too
+slow for the server's CPU can stall enough to trigger reconnects.
 
 **Auto-join/voice-clip settings reset after a redeploy.**
 `DATA_DIR` (default `./data`) isn't persisted across deploys in your
