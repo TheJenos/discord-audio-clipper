@@ -51,7 +51,9 @@ flowchart TB
         Recorder[voice/recorder.ts<br/>GuildRecording]
         Ring[voice/ringBuffer.ts<br/>PCMRingBuffer per speaker]
         Mixer[voice/mixer.ts<br/>mix + ffmpeg encode]
-        Wake[voice/wakeWord.ts<br/>sherpa-onnx "clip that" detector]
+        WakeEngine[voice/wakeWordEngine.ts<br/>fans audio out to configured detectors]
+        Wake[voice/wakeWord.ts<br/>KWS "please clip that" detector]
+        Transcriber[voice/transcriber.ts<br/>Whisper transcription detector]
         WakeClip[voice/wakeClip.ts<br/>clip + post on detection]
         Notify[voice/notifySound.ts<br/>plays confirmation chime]
         LeaveGrace[voice/leaveGrace.ts<br/>debounced auto-leave]
@@ -67,8 +69,12 @@ flowchart TB
     Connect --> Recorder
     Connect --> WakeClip
     Recorder --> Ring
-    Recorder --> Wake
-    Wake -- "wakeword" event --> Recorder
+    Recorder --> WakeEngine
+    WakeEngine --> Wake
+    WakeEngine --> Transcriber
+    Wake -- "wakeword" event --> WakeEngine
+    Transcriber -- "wakeword" event --> WakeEngine
+    WakeEngine -- "wakeword" event --> Recorder
     Recorder -- "wakeword" event --> WakeClip
     WakeClip --> Notify
     Notify -- chime --> VC
@@ -103,10 +109,23 @@ flowchart TB
 - **`voice/mixer.ts`** reads the requested window from every speaker's ring
   buffer, sums them into one mix, and shells out to `ffmpeg` to encode an
   mp3. Used by both `/clip` and the wake-word handler.
+- **`voice/wakeWordEngine.ts`** is the entry point `recorder.ts` uses for
+  wake-word detection: per speaker, it creates whichever of the two engines
+  below are configured and fans that speaker's PCM out to all of them, firing
+  the same detection callback if either one hears "please clip that".
+- **`voice/downsample.ts`** holds the shared 48kHz-stereo → 16kHz-mono
+  downmixing both engines below need, since sherpa-onnx models expect that
+  input format either way.
 - **`voice/wakeWord.ts`** wraps a single shared sherpa-onnx keyword-spotting
-  model (loaded once for the whole process), creating a lightweight
-  per-speaker stream that downsamples their PCM and feeds it in to detect
-  "clip that" (see [§6](#6-voiceclip-clip-that-setup)).
+  (KWS) model (loaded once for the whole process), creating a lightweight
+  per-speaker stream that downsamples their PCM and feeds it in to detect a
+  fixed phrase baked into a keywords file (see [§6](#6-voiceclip-clip-that-setup)).
+- **`voice/transcriber.ts`** is the optional second detector: a shared
+  offline sherpa-onnx Whisper model. Unlike the always-on KWS stream, it
+  buffers each speaker's PCM for one speaking session and transcribes the
+  whole utterance in one shot once they stop talking, matching the
+  transcript against configurable `WAKE_WORD_PHRASES` instead of a fixed
+  keywords file (see [§6](#6-voiceclip-clip-that-setup)).
 - **`voice/wakeClip.ts`** listens for a `GuildRecording`'s `'wakeword'`
   event, debounces repeated triggers, plays a confirmation chime
   (`voice/notifySound.ts`) right away, then clips the last
@@ -129,7 +148,7 @@ sequenceDiagram
     participant R as GuildRecording (recorder.ts)
     participant D as prism-media Opus decoder
     participant RB as PCMRingBuffer (per speaker)
-    participant W as WakeWordDetector (wakeWord.ts)
+    participant W as wakeWordEngine (KWS +/or ASR)
 
     U->>DC: starts talking
     DC->>R: receiver.speaking "start" (userId)
@@ -140,8 +159,8 @@ sequenceDiagram
     Note over RB: positioned by wall-clock time,<br/>wraps after windowMs
     opt /voiceclip enabled for this guild
         D->>W: same PCM chunks
-        W->>W: downsample to 16kHz mono,<br/>feed into the speaker's KWS stream
-        W-->>R: onDetected() if "clip that" heard
+        W->>W: downsample to 16kHz mono,<br/>feed into whichever detector(s) are configured
+        W-->>R: onDetected() if "please clip that" heard by either one
     end
 ```
 
@@ -163,15 +182,21 @@ sequenceDiagram
    corresponds to the same instant — instead of needing to timestamp-align
    streams after the fact.
 4. **Wake-word detection (optional).** If `/voiceclip enable` has been run
-   for the guild and the bot has a keyword-spotting model configured, the
-   same PCM chunks are also handed to a per-speaker `WakeWordDetector`. It
-   downsamples 48kHz stereo to the model's 16kHz mono (a clean 3:1 ratio) by
-   averaging channels and decimating, feeds the result into that speaker's
-   own lightweight sherpa-onnx stream (`acceptWaveform` + a `decode` loop
-   while the stream reports it's ready), and reads back the stream's result.
-   A non-empty `keyword` means "clip that" was heard: the stream is reset
-   (so it can detect again) and the `GuildRecording`'s `'wakeword'` event
-   fires — see [§6](#6-voiceclip-clip-that-setup).
+   for the guild and at least one wake-word engine is configured, the same
+   PCM chunks are also handed to a per-speaker detector created by
+   `wakeWordEngine.ts` — the KWS detector (`wakeWord.ts`), the transcription
+   detector (`transcriber.ts`), or both, if both are configured. Both
+   downsample 48kHz stereo to 16kHz mono (a clean 3:1 ratio, shared via
+   `downsample.ts`), but decode differently: KWS feeds each chunk straight
+   into its own lightweight sherpa-onnx stream (`acceptWaveform` + a `decode`
+   loop while the stream reports it's ready) and checks for a non-empty
+   `keyword` continuously, as speech comes in. The transcription detector
+   instead buffers the downsampled audio and only transcribes it in one shot,
+   via an offline Whisper model, once the speaker stops talking (its
+   `destroy()`, called when the recorder's silence-triggered subscription
+   closes) — checking the transcript for any of `WAKE_WORD_PHRASES`. Either
+   one detecting the phrase fires the `GuildRecording`'s `'wakeword'` event —
+   see [§6](#6-voiceclip-clip-that-setup).
 5. **Clipping.** Both `/clip [seconds]` and a wake-word detection call
    `mixer.createClip`, which:
    - computes `[startMs, endMs)` for the requested window, clamped to both
@@ -257,7 +282,7 @@ in a container.
 
 ## 6. Voiceclip Clip-That Setup
 
-`/voiceclip` lets anyone say **"clip that"** out loud instead of typing
+`/voiceclip` lets anyone say **"please clip that"** out loud instead of typing
 `/clip`. Detection runs on [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
 (specifically its Node binding,
 [`sherpa-onnx-node`](https://www.npmjs.com/package/sherpa-onnx-node)) — an
@@ -266,7 +291,7 @@ spotting (KWS)** mode: a tiny model that only recognizes a fixed list of
 phrases you give it, rather than doing general transcription. No account, no
 API key, no per-use cost, and no usage cap — you just need one free
 pretrained model file and a short one-time step to teach it the phrase
-"clip that".
+"please clip that".
 
 This is a one-time setup by whoever **runs** the bot (not per-server — it's
 a bot-wide deployment step, same as `DISCORD_TOKEN`), done once on any
@@ -281,24 +306,36 @@ writes the five `KWS_*` paths straight into `.env`:
 npm run setup-voiceclip
 ```
 
-Re-running it is safe: it skips the download if the model's already there,
-and only overwrites the `KWS_*` lines in `.env`, leaving everything else
-untouched. Useful flags (`scripts/setup-voiceclip.sh --help` for the full
-list):
+Add `-- --with-asr` to also set up the [optional transcription-based
+check](#optional-transcription-based-trigger-check) below in the same run:
+
+```bash
+npm run setup-voiceclip -- --with-asr
+```
+
+Re-running it is safe: it skips a download if that model's already there,
+and only overwrites the `KWS_*` (and, with `--with-asr`, `ASR_*`/
+`WAKE_WORD_PHRASES`) lines in `.env`, leaving everything else untouched.
+Useful flags (`scripts/setup-voiceclip.sh --help` for the full list):
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--phrase "clip that"` | `clip that` | Trigger phrase to teach the model |
-| `--score` / `--threshold` | `2.0` / `0.35` | Baked into the generated keywords file — see step 4 below for what these do |
-| `--out-dir` | `data/kws-model` | Where the model + generated `keywords.txt` are stored (already gitignored) |
-| `--env-file` | `.env` | Which file to write `KWS_*` into |
-| `--fp32` | *(off = int8)* | Use full-precision model files instead of the smaller/faster int8 ones |
-| `--print-only` | *(off)* | Print the `KWS_*` lines instead of writing them to `--env-file`, if you'd rather manage them yourself |
+| `--phrase "please clip that,clip that"` | `please clip that` | Comma-separated trigger phrase(s) to teach the KWS model - one keyword line is generated per phrase |
+| `--score` / `--threshold` | `2.0` / `0.35` | Baked into every phrase's line in the generated keywords file — see step 4 below for what these do |
+| `--out-dir` | `data/kws-model` | Where the KWS model + generated `keywords.txt` are stored (already gitignored) |
+| `--env-file` | `.env` | Which file to write the env vars into |
+| `--fp32` | *(off = int8)* | Use full-precision model files instead of the smaller/faster int8 ones (applies to both KWS and, with `--with-asr`, ASR) |
+| `--print-only` | *(off)* | Print the env vars instead of writing them to `--env-file`, if you'd rather manage them yourself |
+| `--with-asr` | *(off)* | Also download a small offline Whisper ASR model (~113MB) and write `ASR_*`/`WAKE_WORD_PHRASES` |
+| `--wake-word-phrases "please clip that,clip that"` | *(same as `--phrase`)* | Comma-separated phrases the transcription check matches; only relevant with `--with-asr` |
+| `--asr-out-dir` | `data/asr-model` | Where the ASR model is stored (already gitignored); only relevant with `--with-asr` |
 
 It needs `python3`, `pip3`, `tar`, and `curl` or `wget` on the machine it
-runs on; it installs the `sherpa-onnx` Python package (and its `click` /
-`pypinyin` runtime dependencies, which that package doesn't always declare
-on its own) automatically if `sherpa-onnx-cli` isn't already on `PATH`.
+runs on; it installs the `sherpa-onnx` Python package (and its `click`
+runtime dependency, which that package doesn't always declare on its own)
+automatically if `sherpa-onnx-cli` isn't already on `PATH` — this is only
+needed for the KWS keywords-file step, not for `--with-asr`, which involves
+no Python tooling beyond what's already required.
 
 The rest of this section is what the script automates, spelled out for
 reference or if you'd rather run it by hand:
@@ -315,12 +352,12 @@ reference or if you'd rather run it by hand:
    The int8-quantized `*.int8.onnx` files are smaller and faster with
    negligible accuracy loss for a task this narrow — use those unless you
    have a reason not to.
-2. **Generate a keywords file for "clip that".** The model needs the phrase
+2. **Generate a keywords file for "please clip that".** The model needs the phrase
    spelled out in its own BPE token vocabulary, produced by a small CLI tool
    that ships with the (separate, Python) `sherpa-onnx` package:
    ```bash
    pip install sherpa-onnx
-   echo 'CLIP THAT :2.0 #0.35 @clip_that' > keywords_raw.txt
+   echo 'please clip that :2.0 #0.35 @clip_that' > keywords_raw.txt
    sherpa-onnx-cli text2token \
      --tokens sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/tokens.txt \
      --tokens-type bpe \
@@ -332,7 +369,11 @@ reference or if you'd rather run it by hand:
    the label reported back as `KeywordResult.keyword` on a hit (spaces
    replaced with underscores). This step is local and instant; nothing is
    uploaded anywhere. (This is the only step that needs Python — the bot
-   itself only needs the Node package, already in `package.json`.)
+   itself only needs the Node package, already in `package.json`.) To trigger
+   on more than one phrase, add another line to `keywords_raw.txt` before
+   running `text2token` — see [Adding another voice trigger
+   phrase](#12-project-layout--extending-the-bot) below (the automated script
+   does this for you when `--phrase` is given a comma-separated list).
 3. **Ship both the model and `keywords.txt` with your deployment**
    somewhere the bot process can read them, and point five env vars at the
    exact files (see [`.env.example`](../.env.example)):
@@ -358,10 +399,75 @@ itself is loaded once and shared for the whole process; only a lightweight
 per-speaker stream is created per speaking session, so the marginal cost of
 having `/voiceclip` on is small even with several people talking at once.
 
+### Optional: transcription-based trigger check
+
+KWS only ever recognizes the exact phrase(s) baked into `keywords.txt`, which
+makes it fast but occasionally prone to missing a trigger said in an unusual
+way. As a second, parallel check, `voice/transcriber.ts` buffers each
+speaker's audio for one speaking session and, once they stop talking,
+transcribes the whole utterance in one shot with an **offline Whisper
+model**, matching the transcript against a configurable list of trigger
+phrases (`WAKE_WORD_PHRASES`, comma-separated, defaults to just "please clip
+that"). When both `KWS_*` and `ASR_*` are configured, both run per speaker
+and either one detecting the phrase fires the same `'wakeword'` event
+(`voice/wakeWordEngine.ts` fans a speaker's audio out to whichever engines
+are configured); when only one is configured, only that one runs.
+
+Whisper specifically — rather than a continuously-streaming ASR model
+matching KWS's design — was chosen after testing both approaches against
+real "please clip that" recordings: a streaming zipformer ASR model (the
+same model family KWS uses, just doing general transcription) missed or
+garbled the phrase on every short/quiet clip tried, while an offline Whisper
+decode of the same clips transcribed them correctly every time. The
+tradeoff is latency: because Whisper needs the whole utterance, this check
+only fires after the speaker pauses (whenever the recorder's
+`EndBehaviorType.AfterSilence` subscription closes, currently 2 seconds of
+silence — see [§3](#3-the-recording-pipeline)), not mid-sentence the way KWS
+can. Decoding itself is fast (well under 100ms for the tiny model this repo
+defaults to) and runs via sherpa-onnx's async decode API, so it doesn't
+block the event loop voice I/O and Discord's heartbeats also run on.
+
+### Automated: `scripts/setup-voiceclip.sh --with-asr`
+
+```bash
+npm run setup-voiceclip -- --with-asr
+```
+
+Downloads a small (~113MB) offline English Whisper model
+(`sherpa-onnx-whisper-tiny.en`), and writes `ASR_ENCODER_PATH` /
+`ASR_DECODER_PATH` / `ASR_TOKENS_PATH` / `WAKE_WORD_PHRASES` into `.env`,
+alongside the `KWS_*` vars from the plain (non-`--with-asr`) run — see the
+flag table above for `--wake-word-phrases`, `--asr-out-dir`, and how
+`--fp32`/`--print-only` apply to it too. Unlike KWS, no `keywords.txt`
+generation step is needed — Whisper transcribes arbitrary speech out of the
+box, so `--with-asr` doesn't need `sherpa-onnx-cli`/Python tooling at all.
+
+### Manual setup
+
+1. Download any sherpa-onnx **offline Whisper model** (not a streaming/online
+   model, and not a KWS model) — see the pretrained model list in the
+   [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases).
+   The `.en` (English-only) variants are smaller and sufficient unless you
+   need other languages.
+2. Point `ASR_ENCODER_PATH` / `ASR_DECODER_PATH` / `ASR_TOKENS_PATH` at the
+   downloaded model's files (see [`.env.example`](../.env.example)) — Whisper
+   has no joiner file, unlike KWS/streaming transducer models.
+3. Optionally set `WAKE_WORD_PHRASES` to a comma-separated list if you want
+   more than one wording to trigger a clip (e.g.
+   `please clip that,clip that,clip it`). Matching is case-insensitive and
+   ignores punctuation.
+4. Restart the bot. This is independent of the `KWS_*` setup above — you can
+   run either one alone or both together.
+
+This check runs once per speaking session rather than continuously, so its
+CPU cost scales with how often people talk (and pause) rather than with
+audio duration - see the latency note above for the tradeoff that comes with
+it.
+
 Per-server, once the bot is configured:
 
 - `/voiceclip enable` turns detection on for that server.
-- As soon as "clip that" is heard, the bot plays a short chime into the
+- As soon as "please clip that" is heard, the bot plays a short chime into the
   voice channel — immediate feedback that it caught the trigger, before the
   clip itself has even been mixed. This needs the **Speak** permission;
   without it the chime just won't be audible (Discord doesn't reliably
@@ -395,7 +501,7 @@ Per-server, once the bot is configured:
 3. **Invite the bot.** Build an invite URL with the `bot` and
    `applications.commands` scopes and the **Connect**, **Speak**, and
    **View Channel** permissions. Speak is used for the short confirmation
-   chime `/voiceclip` plays back when it hears "clip that" — without it,
+   chime `/voiceclip` plays back when it hears "please clip that" — without it,
    recording and `/clip` still work fine, you just lose that audio cue. Add
    **Send Messages** too if you want `/voiceclip` to be able to post in
    voice channels' own text chat. You can generate this URL from
@@ -443,13 +549,19 @@ these.
 | `AUTO_JOIN_MIN_MEMBERS`  |          | `4`       | Auto-join fires once a channel has at least this many non-bot members — "more than 3" means `4`. Only takes effect in guilds where `/autojoin enable` has been run. |
 | `LEAVE_GRACE_SECONDS`    |          | `10`      | Delay after a channel empties before the bot actually disconnects, to absorb brief drop-and-rejoin blips. |
 | `DATA_DIR`               |          | `./data`  | Directory holding `settings.json` (per-guild auto-join and voice-clip settings). Must be writable; point it at a persistent volume in containerized deployments. |
-| `KWS_ENCODER_PATH`       |          | —         | Path to the KWS model's encoder `.onnx` file. Required (with the four below) for `/voiceclip enable` to work — see [§6](#6-voiceclip-clip-that-setup). |
+| `KWS_ENCODER_PATH`       |          | —         | Path to the KWS model's encoder `.onnx` file. Required (with the four below), or `ASR_*` below, for `/voiceclip enable` to work — see [§6](#6-voiceclip-clip-that-setup). |
 | `KWS_DECODER_PATH`       |          | —         | Path to the KWS model's decoder `.onnx` file. |
 | `KWS_JOINER_PATH`        |          | —         | Path to the KWS model's joiner `.onnx` file. |
 | `KWS_TOKENS_PATH`        |          | —         | Path to the KWS model's `tokens.txt`. |
-| `KWS_KEYWORDS_PATH`      |          | —         | Path to the generated `keywords.txt` containing "clip that". |
+| `KWS_KEYWORDS_PATH`      |          | —         | Path to the generated `keywords.txt` containing "please clip that". |
 | `KWS_SCORE`, `KWS_THRESHOLD` |      | *(from file)* | Optional overrides for the boosting score / triggering threshold baked into `keywords.txt`, without regenerating it. |
-| `WAKE_WORD_CLIP_SECONDS` |          | `30`      | How many seconds "clip that" grabs. |
+| `KWS_DEBUG_AUDIO_DIR`    |          | —         | Debugging aid: when set, dumps the exact audio fed to the KWS model as a `.wav` file per speaking session into this directory, so you can listen to what the detector heard. |
+| `WAKE_WORD_CLIP_SECONDS` |          | `30`      | How many seconds "please clip that" grabs. |
+| `ASR_ENCODER_PATH`       |          | —         | Path to an offline Whisper model's encoder `.onnx` file, for the transcription-based trigger check. Optional and independent of `KWS_*` — either detecting the phrase triggers a clip. See [§6](#6-voiceclip-clip-that-setup). |
+| `ASR_DECODER_PATH`       |          | —         | Path to the Whisper model's decoder `.onnx` file. |
+| `ASR_TOKENS_PATH`        |          | —         | Path to the Whisper model's tokens file. |
+| `WAKE_WORD_PHRASES`      |          | `please clip that` | Comma-separated trigger phrases the transcription check matches against a lowercased, punctuation-stripped transcript. |
+| `VERBOSE` (or the `--verbose` CLI flag, e.g. `npm start -- --verbose`) |  | off | Logs every transcript the transcription check produces via `debugLog` (`src/log.ts`), not just the ones that match a trigger phrase - noisy, for debugging missed/garbled phrases. Detections and errors always log regardless. |
 
 ## 9. Command reference
 
@@ -505,10 +617,10 @@ and [§6](#6-voiceclip-clip-that-setup)):
 
 | Subcommand | Effect |
 |---|---|
-| `/voiceclip enable` | Turns "clip that" detection on for this server. Fails with an explanatory error if the bot itself hasn't been configured with a keyword-spotting model. |
+| `/voiceclip enable` | Turns "please clip that" detection on for this server. Fails with an explanatory error if the bot itself hasn't been configured with a keyword-spotting model. |
 | `/voiceclip disable` | Turns detection off for this server. |
 | `/voiceclip status` | Shows on/off state, the destination channel, and whether the bot has a wake-word engine configured at all. |
-| `/voiceclip channel set <channel>` | Posts future "clip that" clips to this text channel instead of the voice chat. |
+| `/voiceclip channel set <channel>` | Posts future "please clip that" clips to this text channel instead of the voice chat. |
 | `/voiceclip channel clear` | Goes back to posting in whichever voice channel's own chat the phrase was said in. |
 
 ## 10. Running in production
@@ -635,21 +747,31 @@ environment. Point it at a volume that survives redeploys.
 
 **`/voiceclip enable` says the bot isn't configured for wake-word
 detection.**
-One or more of the five `KWS_*` paths aren't set (or the process wasn't
-restarted after setting them). This is a bot-operator setup step, not
-something a server admin can fix from Discord — see
+Neither the five `KWS_*` paths nor the three `ASR_*` paths are set (or the
+process wasn't restarted after setting them) — `/voiceclip status` shows
+which of the two engines are configured. This is a bot-operator setup step,
+not something a server admin can fix from Discord — see
 [§6](#6-voiceclip-clip-that-setup).
 
-**"clip that" isn't triggering even though `/voiceclip status` shows it's
+**"please clip that" isn't triggering even though `/voiceclip status` shows it's
 on.**
 Check the bot is actually connected and recording in that guild — enabling
 `/voiceclip` doesn't join a channel by itself. If it's connected and still
-not triggering: confirm `KWS_KEYWORDS_PATH` actually contains a line for
-"clip that" (re-run the `text2token` step in [§6](#6-voiceclip-clip-that-setup)
-if unsure), and try raising the boosting score / lowering the threshold —
-either by regenerating `keywords_raw.txt` or via `KWS_SCORE`/`KWS_THRESHOLD`.
+not triggering: for KWS, confirm `KWS_KEYWORDS_PATH` actually contains a line
+for "please clip that" (re-run the `text2token` step in
+[§6](#6-voiceclip-clip-that-setup) if unsure), and try raising the boosting
+score / lowering the threshold — either by regenerating `keywords_raw.txt` or
+via `KWS_SCORE`/`KWS_THRESHOLD`. For the transcription check, remember it
+only fires after the speaker stops talking (see the latency note in
+[§6](#6-voiceclip-clip-that-setup)), so give it a couple of seconds of
+silence before assuming it missed; also confirm `WAKE_WORD_PHRASES` actually
+contains the phrase being said. Either way, set `KWS_DEBUG_AUDIO_DIR` to
+listen back to exactly what was fed to the KWS detector — a misheard word
+will usually show up the same way for the transcription check too.
+Configuring both engines gives the phrase two independent chances to be
+caught, which is usually a more effective fix than tuning either one alone.
 
-**"clip that" clips don't get posted anywhere, or the log shows
+**"please clip that" clips don't get posted anywhere, or the log shows
 `DiscordAPIError[50001]: Missing Access`.**
 The clip was created fine; posting it failed. `50001` means the bot can't
 see that channel at all — it's missing **View Channel** and/or
@@ -682,7 +804,7 @@ src/
     recorder.ts             GuildRecording: per-guild subscription lifecycle
     ringBuffer.ts            PCMRingBuffer: time-indexed circular PCM buffer
     mixer.ts                 mixdown + ffmpeg encode for /clip and wake-word clips
-    wakeWord.ts              shared sherpa-onnx model + per-speaker "clip that" detector
+    wakeWord.ts              shared sherpa-onnx model + per-speaker "please clip that" detector
     wakeClip.ts              turns a wake-word detection into a posted clip
     notifySound.ts           plays the "heard you" chime into the voice channel
     leaveGrace.ts            debounce timers for auto-leave
@@ -704,10 +826,15 @@ and re-run `npm run deploy-commands`.
 first time they're read, since `getGuildSettings` merges over
 `DEFAULT_SETTINGS`.
 
-**Adding another voice trigger phrase:** a sherpa-onnx keywords file already
+**Adding another voice trigger phrase:** if the transcription check
+([§6](#6-voiceclip-clip-that-setup)) is configured, just add the phrase to
+`WAKE_WORD_PHRASES` (comma-separated) — no model changes needed. For the KWS
+model, re-run `npm run setup-voiceclip -- --phrase "please clip that,stop
+recording"` (a comma-separated `--phrase` generates one keywords-file line
+per phrase automatically), or by hand: a sherpa-onnx keywords file already
 supports multiple phrases with no code changes — add another line to
-`keywords_raw.txt` (e.g. `CLIP THAT :2.0 #0.35 @clip_that` plus
-`STOP RECORDING :2.0 #0.35 @stop_recording`), re-run `text2token`, and
+`keywords_raw.txt` (e.g. `please clip that :2.0 #0.35 @clip_that` plus `STOP
+RECORDING :2.0 #0.35 @stop_recording`) and re-run `text2token`. Either way,
 `WakeWordDetector`'s `onDetected` callback fires the same way regardless of
 which line matched. To act differently per phrase, thread
 `spotter.getResult(stream).keyword` (the `@`-label, e.g. `clip_that`)

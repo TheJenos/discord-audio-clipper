@@ -21,7 +21,7 @@ const SOUND_PATH = path.join(process.cwd(), 'assets', 'clip-notify.pcm');
 
 /**
  * Plays a short confirmation chime into the voice channel so people get
- * immediate feedback that "clip that" was heard, without waiting for the
+ * immediate feedback that "please clip that" was heard, without waiting for the
  * clip itself to be mixed, encoded, and uploaded.
  */
 export function playClipNotification(connection: VoiceConnection): void {

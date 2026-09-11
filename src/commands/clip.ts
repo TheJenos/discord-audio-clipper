@@ -3,6 +3,7 @@ import * as recorder from '../voice/recorder';
 import * as mixer from '../voice/mixer';
 import { config } from '../config';
 import type { Command } from '../types';
+import { playClipNotification } from '../voice/notifySound';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -48,6 +49,8 @@ const command: Command = {
       await interaction.editReply("There's no audio recorded yet.");
       return;
     }
+
+    playClipNotification(recording.connection);
 
     try {
       const attachment = new AttachmentBuilder(clip.filePath, { name: 'clip.mp3' });

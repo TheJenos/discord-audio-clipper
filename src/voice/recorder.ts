@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { EndBehaviorType, VoiceConnection, VoiceReceiver } from '@discordjs/voice';
 import { opus as prismOpus } from 'prism-media';
 import { PCMRingBuffer, SAMPLE_RATE, CHANNELS } from './ringBuffer';
-import { WakeWordDetector, isConfigured as isWakeWordConfigured } from './wakeWord';
+import { WakeWordEngine, createWakeWordEngine, isConfigured as isWakeWordConfigured } from './wakeWordEngine';
 import * as settingsStore from '../store/settingsStore';
 import { config } from '../config';
 
@@ -12,7 +12,7 @@ export interface GuildRecordingEvents {
   wakeword: [{ userId: string }];
 }
 
-// Emits 'wakeword' (with the speaking userId) whenever "clip that" is
+// Emits 'wakeword' (with the speaking userId) whenever "please clip that" is
 // detected in an active speaker's audio, if /voiceclip is enabled for this
 // guild. See voice/wakeWord.ts and voice/wakeClip.ts.
 export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
@@ -58,14 +58,8 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
     const detector = this.createWakeWordDetector(userId);
 
     pcmStream.on('data', (chunk: Buffer) => {
-      // Write to the ring buffer immediately - this must never wait on the
-      // wake-word decoder, which does real (if small) CPU-bound inference
-      // work. Deferring it past the current I/O poll phase means a slow
-      // decode can't delay this chunk's write, the next chunk's 'data'
-      // event, or Discord's voice/gateway heartbeats - all of which share
-      // this same event loop.
       activeBuffer.write(chunk, Date.now());
-      if (detector) setImmediate(() => detector.push(chunk));
+      detector?.push(chunk);
     });
 
     const cleanup = () => {
@@ -77,14 +71,9 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
     pcmStream.on('error', cleanup);
   }
 
-  private createWakeWordDetector(userId: string): WakeWordDetector | null {
+  private createWakeWordDetector(userId: string): WakeWordEngine | null {
     if (!settingsStore.isVoiceClipEnabled(this.guildId) || !isWakeWordConfigured()) return null;
-    try {
-      return new WakeWordDetector(() => this.emit('wakeword', { userId }));
-    } catch (err) {
-      console.error(`Failed to start wake-word detector in guild ${this.guildId}:`, err);
-      return null;
-    }
+    return createWakeWordEngine(userId, () => this.emit('wakeword', { userId }));
   }
 
   destroy(): void {
