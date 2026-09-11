@@ -29,7 +29,8 @@ troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
   AFK lobby) from ever triggering it. All of this is saved to disk, so it
   survives a bot restart.
 - `/voiceclip enable` / `/voiceclip disable` turns on saying **"clip that"**
-  out loud to grab a clip hands-free — it posts the last 30 seconds
+  out loud to grab a clip hands-free — the bot plays a short chime into the
+  voice channel to confirm it heard you, then posts the last 30 seconds
   (configurable) to `/voiceclip channel set <channel>` if you've set one, or
   the voice channel's own text chat otherwise. Detection runs on a free,
   fully offline [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
@@ -44,9 +45,9 @@ troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
    Under **Bot**, copy the token. Under **OAuth2 → General**, copy the
    Application (Client) ID.
 2. Invite the bot to your server with the `bot` and `applications.commands`
-   scopes, and the **Connect** + **Speak** + **View Channel** permissions
-   (Speak isn't strictly needed since the bot never talks, but some clients
-   require it to fully join).
+   scopes, and the **Connect** + **Speak** + **View Channel** permissions.
+   Speak is used for the short "heard you" chime `/voiceclip` plays back —
+   without it, everything else still works, you just lose that audio cue.
 3. Install dependencies:
    ```bash
    npm install

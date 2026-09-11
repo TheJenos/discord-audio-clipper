@@ -2,6 +2,7 @@ import { AttachmentBuilder } from 'discord.js';
 import type { VoiceBasedChannel } from 'discord.js';
 import type { GuildRecording } from './recorder';
 import * as mixer from './mixer';
+import { playClipNotification } from './notifySound';
 import * as settingsStore from '../store/settingsStore';
 import { config } from '../config';
 
@@ -25,6 +26,10 @@ async function handleWake(channel: VoiceBasedChannel, recording: GuildRecording)
   const now = Date.now();
   if (now - (lastTriggerAtByGuild.get(guildId) ?? 0) < DEBOUNCE_MS) return;
   lastTriggerAtByGuild.set(guildId, now);
+
+  // Acknowledge the trigger immediately, in-channel, rather than making
+  // whoever said it wait for the clip to be mixed and uploaded.
+  playClipNotification(recording.connection);
 
   const clip = await mixer.createClip(recording, config.wakeWordClipSeconds);
   if (!clip) return;

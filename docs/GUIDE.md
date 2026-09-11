@@ -53,6 +53,7 @@ flowchart TB
         Mixer[voice/mixer.ts<br/>mix + ffmpeg encode]
         Wake[voice/wakeWord.ts<br/>sherpa-onnx "clip that" detector]
         WakeClip[voice/wakeClip.ts<br/>clip + post on detection]
+        Notify[voice/notifySound.ts<br/>plays confirmation chime]
         LeaveGrace[voice/leaveGrace.ts<br/>debounced auto-leave]
         Store[store/settingsStore.ts<br/>JSON-backed guild settings]
     end
@@ -69,6 +70,8 @@ flowchart TB
     Recorder --> Wake
     Wake -- "wakeword" event --> Recorder
     Recorder -- "wakeword" event --> WakeClip
+    WakeClip --> Notify
+    Notify -- chime --> VC
     WakeClip --> Mixer
     WakeClip -- posts mp3 --> VC
     Commands -- "/clip" --> Mixer
@@ -105,9 +108,13 @@ flowchart TB
   per-speaker stream that downsamples their PCM and feeds it in to detect
   "clip that" (see [§6](#6-voiceclip-clip-that-setup)).
 - **`voice/wakeClip.ts`** listens for a `GuildRecording`'s `'wakeword'`
-  event, debounces repeated triggers, clips the last `WAKE_WORD_CLIP_SECONDS`
-  via the mixer, and posts it to the configured channel (or the voice
-  channel's own chat).
+  event, debounces repeated triggers, plays a confirmation chime
+  (`voice/notifySound.ts`) right away, then clips the last
+  `WAKE_WORD_CLIP_SECONDS` via the mixer and posts it to the configured
+  channel (or the voice channel's own chat).
+- **`voice/notifySound.ts`** plays a short pre-rendered chime
+  (`assets/clip-notify.pcm`) into the voice channel via a throwaway
+  `AudioPlayer` — the only place the bot outputs audio.
 - **`voice/leaveGrace.ts`** holds the per-guild "about to leave" timers used
   by auto-leave (see [§4](#4-auto-join-auto-leave-and-the-leave-grace-period)).
 - **`store/settingsStore.ts`** is the only piece of state that outlives a
@@ -354,6 +361,12 @@ having `/voiceclip` on is small even with several people talking at once.
 Per-server, once the bot is configured:
 
 - `/voiceclip enable` turns detection on for that server.
+- As soon as "clip that" is heard, the bot plays a short chime into the
+  voice channel — immediate feedback that it caught the trigger, before the
+  clip itself has even been mixed. This needs the **Speak** permission;
+  without it the chime just won't be audible (Discord doesn't reliably
+  surface that as a catchable error the way REST calls do) but detection,
+  clipping, and posting are unaffected either way.
 - `/voiceclip channel set #announcements` posts clips there instead of the
   voice channel's own chat; `/voiceclip channel clear` reverts to that
   default. Posting to the voice channel's own chat uses discord.js's
@@ -381,8 +394,9 @@ Per-server, once the bot is configured:
    **Bot → Privileged Gateway Intents**.
 3. **Invite the bot.** Build an invite URL with the `bot` and
    `applications.commands` scopes and the **Connect**, **Speak**, and
-   **View Channel** permissions (Speak isn't strictly needed — the bot never
-   plays audio — but some clients want it to fully join a channel). Add
+   **View Channel** permissions. Speak is used for the short confirmation
+   chime `/voiceclip` plays back when it hears "clip that" — without it,
+   recording and `/clip` still work fine, you just lose that audio cue. Add
    **Send Messages** too if you want `/voiceclip` to be able to post in
    voice channels' own text chat. You can generate this URL from
    **OAuth2 → URL Generator** in the portal.
@@ -670,9 +684,12 @@ src/
     mixer.ts                 mixdown + ffmpeg encode for /clip and wake-word clips
     wakeWord.ts              shared sherpa-onnx model + per-speaker "clip that" detector
     wakeClip.ts              turns a wake-word detection into a posted clip
+    notifySound.ts           plays the "heard you" chime into the voice channel
     leaveGrace.ts            debounce timers for auto-leave
   store/
     settingsStore.ts         JSON-backed per-guild settings
+assets/
+  clip-notify.pcm            confirmation chime (raw 48kHz/stereo/16-bit PCM)
 ```
 
 **Adding a new slash command:** create `src/commands/yourcommand.ts`
@@ -695,3 +712,17 @@ supports multiple phrases with no code changes — add another line to
 which line matched. To act differently per phrase, thread
 `spotter.getResult(stream).keyword` (the `@`-label, e.g. `clip_that`)
 through the `'wakeword'` event instead of the current bare detection.
+
+**Changing the confirmation chime:** `assets/clip-notify.pcm` is raw
+48kHz/stereo/16-bit PCM (matching `SAMPLE_RATE`/`CHANNELS` in
+`voice/ringBuffer.ts`), chosen specifically so `notifySound.ts` never needs
+ffmpeg at playback time — `@discordjs/voice` Opus-encodes it directly via
+the same `opusscript` codec already used for recording. Regenerate it with
+`ffmpeg-static`'s binary, e.g.:
+```bash
+node -e "console.log(require('ffmpeg-static'))"   # prints the ffmpeg path
+<that path> -f lavfi -i "sine=frequency=880:duration=0.2" \
+  -ar 48000 -ac 2 -f s16le assets/clip-notify.pcm
+```
+Keep it short (a few hundred ms) and not too loud — it plays into a live
+voice channel every time someone triggers `/voiceclip`.
