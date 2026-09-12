@@ -11,14 +11,17 @@ troubleshooting, see **[docs/GUIDE.md](docs/GUIDE.md)**.
 ## How it works
 
 - `/join` connects the bot to your current voice channel. From that point on,
-  it keeps a fixed-size **rolling buffer per speaker** (default: 5 minutes) of
-  raw PCM audio — nothing is written to disk while recording, so the "tape"
-  is always just the most recent window and never grows unbounded.
-- `/clip [seconds]` mixes every speaker's buffer for the requested window
-  (default and max come from your config), encodes it to mp3 via ffmpeg, and
-  uploads it. The mp3 is written to the OS temp directory only for the few
-  seconds it takes to encode and upload, then deleted.
-- `/leave` disconnects and drops the buffers. The bot also leaves
+  it keeps **one fixed-size rolling buffer for the whole channel** (default:
+  5 minutes, and never more than that) of already-mixed PCM audio — everyone
+  is summed into the same stream as they speak, and anything older than the
+  window is overwritten as new audio comes in. Nothing is written to disk
+  while recording, so the "tape" is always just the most recent window and
+  never grows unbounded.
+- `/clip [seconds]` reads the requested window out of that buffer (default
+  and max come from your config), encodes it to mp3 via ffmpeg, and uploads
+  it. The mp3 is written to the OS temp directory only for the few seconds it
+  takes to encode and upload, then deleted.
+- `/leave` disconnects and drops the buffer. The bot also leaves
   automatically once everyone else has left the channel — after a short grace
   period (default 10s), in case everyone just briefly dropped out.
 - `/autojoin enable` / `/autojoin disable` toggles automatic joining per
@@ -80,7 +83,7 @@ All settings live in `.env` (see `.env.example`):
 | `DISCORD_TOKEN`          | Bot token                                                 | —       |
 | `CLIENT_ID`              | Application/client ID                                     | —       |
 | `GUILD_ID`               | Guild to register commands to instantly (optional)        | global  |
-| `RECORD_WINDOW_SECONDS`  | How much audio to keep in the rolling buffer              | `300`   |
+| `RECORD_WINDOW_SECONDS`  | How much audio to keep in the rolling buffer (max `300`)  | `300`   |
 | `DEFAULT_CLIP_SECONDS`   | Default clip length when `/clip` is used with no argument | `300`   |
 | `AUTO_JOIN_MIN_MEMBERS`  | Humans required in a channel to trigger auto-join         | `4`     |
 | `LEAVE_GRACE_SECONDS`    | Delay before auto-leaving an emptied channel               | `10`    |
@@ -123,7 +126,7 @@ manual steps for both.
   better performance under heavy load, you can swap in `@discordjs/opus` and
   `sodium-native` instead — both are drop-in replacements that prism-media
   and `@discordjs/voice` will pick up automatically once installed.
-- Memory usage scales with `RECORD_WINDOW_SECONDS` and the number of distinct
-  speakers seen since joining (each gets their own fixed-size buffer, roughly
-  `RECORD_WINDOW_SECONDS × 192 KB/s`).
+- Memory usage scales with `RECORD_WINDOW_SECONDS` only — one buffer per
+  guild, roughly `RECORD_WINDOW_SECONDS × 192 KB/s`, no matter how many
+  people are talking.
 - ffmpeg is bundled via `ffmpeg-static`, so no system install is required.

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { EndBehaviorType, VoiceConnection, VoiceReceiver } from '@discordjs/voice';
 import { opus as prismOpus } from 'prism-media';
-import { PCMRingBuffer, SAMPLE_RATE, CHANNELS } from './ringBuffer';
+import { MixingRingBuffer, MAX_WINDOW_MS, SAMPLE_RATE, CHANNELS } from './ringBuffer';
 import { WakeWordEngine, createWakeWordEngine, isConfigured as isWakeWordConfigured } from './wakeWordEngine';
 import * as settingsStore from '../store/settingsStore';
 import { config } from '../config';
@@ -21,7 +21,8 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
   readonly guildId: string;
   readonly windowMs: number;
   readonly startedAtMs: number;
-  readonly userBuffers = new Map<string, PCMRingBuffer>();
+  /** One mixed stream for the whole guild, not one buffer per speaker. */
+  readonly buffer: MixingRingBuffer;
 
   private readonly receiver: VoiceReceiver;
   private readonly activeSubscriptions = new Set<string>();
@@ -31,8 +32,9 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
     super();
     this.connection = connection;
     this.guildId = guildId;
-    this.windowMs = config.recordWindowSeconds * 1000;
+    this.windowMs = Math.min(config.recordWindowSeconds * 1000, MAX_WINDOW_MS);
     this.startedAtMs = Date.now();
+    this.buffer = new MixingRingBuffer(this.windowMs, this.startedAtMs);
     this.receiver = connection.receiver;
     this.onSpeakingStart = (userId: string) => this.subscribeToUser(userId);
     this.receiver.speaking.on('start', this.onSpeakingStart);
@@ -42,12 +44,6 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
     if (this.activeSubscriptions.has(userId)) return;
     this.activeSubscriptions.add(userId);
 
-    let buffer = this.userBuffers.get(userId);
-    if (!buffer) {
-      buffer = new PCMRingBuffer(this.windowMs);
-      this.userBuffers.set(userId, buffer);
-    }
-
     const opusStream = this.receiver.subscribe(userId, {
       end: { behavior: EndBehaviorType.AfterSilence, duration: 100 },
     });
@@ -55,16 +51,16 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
       new prismOpus.Decoder({ rate: SAMPLE_RATE, channels: CHANNELS, frameSize: 960 })
     );
 
-    const activeBuffer = buffer;
     const detector = this.createWakeWordDetector(userId);
 
     pcmStream.on('data', (chunk: Buffer) => {
-      activeBuffer.write(chunk, Date.now());
+      this.buffer.mix(userId, chunk, Date.now());
       detector?.push(chunk);
     });
 
     const cleanup = () => {
       this.activeSubscriptions.delete(userId);
+      this.buffer.endSpeaker(userId);
       detector?.destroy();
     };
     opusStream.on('end', cleanup);
@@ -79,7 +75,6 @@ export class GuildRecording extends EventEmitter<GuildRecordingEvents> {
 
   destroy(): void {
     this.receiver.speaking.removeListener('start', this.onSpeakingStart);
-    this.userBuffers.clear();
     this.activeSubscriptions.clear();
     this.removeAllListeners();
   }

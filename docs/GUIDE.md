@@ -26,8 +26,8 @@ how to run it in production, and how to debug it when something goes wrong.
 The bot solves one problem: **"someone said something funny/important five
 minutes ago, I wish I'd been recording."** Instead of recording on demand
 (too late) or recording and saving everything forever (a privacy and storage
-problem), it keeps a small rolling buffer of the last few minutes per
-speaker, in memory only, and only turns that into a real file when someone
+problem), it keeps a small rolling buffer of the last few minutes of the
+channel, in memory only, and only turns that into a real file when someone
 explicitly asks for a clip — either with `/clip`, or by saying **"clip
 that"** out loud if `/voiceclip` is enabled.
 
@@ -104,11 +104,12 @@ flowchart TB
   speaking, decodes it to PCM, and (if `/voiceclip` is enabled) feeds it to a
   wake-word detector too. `GuildRecording` is an `EventEmitter` that emits
   `'wakeword'` on a detection.
-- **`voice/ringBuffer.ts`** is a fixed-size circular buffer of raw PCM,
-  one per speaker, indexed by wall-clock time (see [§3](#3-the-recording-pipeline)).
-- **`voice/mixer.ts`** reads the requested window from every speaker's ring
-  buffer, sums them into one mix, and shells out to `ffmpeg` to encode an
-  mp3. Used by both `/clip` and the wake-word handler.
+- **`voice/ringBuffer.ts`** is a single fixed-size circular buffer per guild,
+  indexed by wall-clock time, that every speaker is mixed into as they talk
+  (see [§3](#3-the-recording-pipeline)).
+- **`voice/mixer.ts`** reads the requested window out of that buffer and
+  shells out to `ffmpeg` to encode an mp3. Used by both `/clip` and the
+  wake-word handler.
 - **`voice/wakeWordEngine.ts`** is the entry point `recorder.ts` uses for
   wake-word detection: per speaker, it creates whichever of the two engines
   below are configured and fans that speaker's PCM out to all of them, firing
@@ -175,14 +176,24 @@ sequenceDiagram
    after 100ms of silence) and pipes it through `prism-media`'s Opus decoder
    to get raw PCM. It re-subscribes automatically the next time they speak
    after a silence-triggered close.
-3. **Writing into the ring buffer.** Each speaker gets their own
-   `PCMRingBuffer` (created lazily, sized to `RECORD_WINDOW_SECONDS`). Writes
-   are positioned **by wall-clock time**, not arrival order: `write()` fills
-   any gap since the last write with silence and always writes at
-   `posFor(timestamp)`. This is what lets `/clip` mix multiple speakers by
-   simple index-aligned addition — sample *N* in every user's buffer
-   corresponds to the same instant — instead of needing to timestamp-align
-   streams after the fact.
+3. **Mixing into the ring buffer.** The guild has exactly one
+   `MixingRingBuffer`, sized to `RECORD_WINDOW_SECONDS` (capped at 5
+   minutes), and every speaker is summed into it as their audio arrives —
+   memory is bounded by the window alone, not by how many people talk.
+   Position in the ring comes **from wall-clock time**, not arrival order, so
+   each speaker's audio lands at the right point on the timeline with no
+   timestamp matching, and concurrent speakers add together naturally.
+
+   Because position is time modulo the window, a slot holds audio from
+   exactly one lap around the ring, so old audio has to be actively expired
+   or it replays forever. The buffer tracks a `headMs` — how far along the
+   timeline it is current — and zeroes everything between the head and the
+   point being written (and again up to *now* on every read). That is what
+   keeps someone who stopped talking five minutes ago out of the next clip.
+   Samples accumulate as 32-bit ints so simultaneous speakers can't clip each
+   other; the sum is peak-normalised down to 16-bit only when read. A
+   per-speaker write cursor keeps consecutive decoded frames contiguous when
+   the event loop delivers several at the same millisecond.
 4. **Wake-word detection (optional).** If `/voiceclip enable` has been run
    for the guild and at least one wake-word engine is configured, the same
    PCM chunks are also handed to a per-speaker detector created by
@@ -204,11 +215,10 @@ sequenceDiagram
    - computes `[startMs, endMs)` for the requested window, clamped to both
      `RECORD_WINDOW_SECONDS` and how long the bot has actually been
      recording (so you can't get silence-padding from before you joined);
-   - reads that window out of every speaker's ring buffer;
-   - sums the buffers sample-by-sample into one `Int32Array`, then scales
-     the whole mix down by its peak (not per-sample clipping) so multiple
-     people talking at once doesn't distort;
-   - pipes the mixed PCM into `ffmpeg` (via `fluent-ffmpeg` +
+   - reads that window out of the guild's ring buffer — already mixed,
+     and scaled down by the window's peak (not per-sample clipping) so
+     multiple people talking at once doesn't distort;
+   - pipes that mono PCM into `ffmpeg` (via `fluent-ffmpeg` +
      `ffmpeg-static`, no system ffmpeg install needed) and encodes to a
      128kbps mp3 in the OS temp directory;
    - the caller uploads that file as a Discord attachment, then calls
@@ -546,7 +556,7 @@ these.
 | `DISCORD_TOKEN`          | ✅       | —         | Bot token from the Developer Portal. |
 | `CLIENT_ID`              | ✅       | —         | Application/client ID. |
 | `GUILD_ID`               |          | *(global)* | If set, `deploy-commands` registers commands to this one guild instead of globally. Guild commands update instantly; global commands can take up to an hour. |
-| `RECORD_WINDOW_SECONDS`  |          | `300`     | Size of the rolling per-speaker buffer. `/clip` can never return more than this, and memory use scales with it (roughly `RECORD_WINDOW_SECONDS × 192 KB` per distinct speaker). |
+| `RECORD_WINDOW_SECONDS`  |          | `300`     | Size of the guild's single rolling buffer, **capped at 300** (5 minutes) — larger values are clamped. `/clip` can never return more than this, and memory use scales with it (roughly `RECORD_WINDOW_SECONDS × 192 KB` total, regardless of how many people are speaking). |
 | `DEFAULT_CLIP_SECONDS`   |          | `300`     | How much `/clip` returns when called with no `seconds` argument. |
 | `AUTO_JOIN_MIN_MEMBERS`  |          | `4`       | Auto-join fires once a channel has at least this many non-bot members — "more than 3" means `4`. Only takes effect in guilds where `/autojoin enable` has been run. |
 | `LEAVE_GRACE_SECONDS`    |          | `10`      | Delay after a channel empties before the bot actually disconnects, to absorb brief drop-and-rejoin blips. |
